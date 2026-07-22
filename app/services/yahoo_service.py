@@ -447,22 +447,26 @@ class YahooService:
             annual=annual_items,
         )
 
+    def _get_info(self, ticker: Any, symbol: str) -> Dict[str, Any]:
+    try:
+        info = ticker.info
     except Exception as exc:
-    if self._looks_like_missing_symbol_error(exc):
-        raise SymbolNotFoundError(symbol) from exc
+        if self._looks_like_missing_symbol_error(exc):
+            raise SymbolNotFoundError(symbol) from exc
 
-    print("=" * 80)
-    print(f"ERROR FETCHING SYMBOL: {symbol}")
-    traceback.print_exception(type(exc), exc, exc.__traceback__)
-    print("=" * 80)
+        print("=" * 80)
+        print(f"ERROR FETCHING SYMBOL: {symbol}")
+        traceback.print_exception(type(exc), exc, exc.__traceback__)
+        print("=" * 80)
 
-    raise MarketDataUnavailableError(
-        f"Unable to fetch quote data for '{symbol}'."
-    ) from exc
+        raise MarketDataUnavailableError(
+            f"Unable to fetch quote data for '{symbol}'."
+        ) from exc
 
-        if not isinstance(info, dict):
-            return {}
-        return info
+    if not isinstance(info, dict):
+        return {}
+
+    return info
 
     def _get_statement(
         self,
