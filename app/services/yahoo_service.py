@@ -1,10 +1,12 @@
 import math
 from datetime import date
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Set
 
 import yfinance as yf
 
 from app.models import (
+    FinancialHistoryAnnualItem,
+    FinancialHistoryResponse,
     FinancialsResponse,
     HistoricalPrice,
     HistoricalResponse,
@@ -60,6 +62,40 @@ class YahooService:
         "1mo",
         "3mo",
     }
+    _REVENUE_ROWS = ("Total Revenue", "TotalRevenue")
+    _GROSS_PROFIT_ROWS = ("Gross Profit", "GrossProfit")
+    _EBITDA_ROWS = ("EBITDA", "Normalized EBITDA")
+    _OPERATING_INCOME_ROWS = ("Operating Income", "OperatingIncome")
+    _NET_INCOME_ROWS = ("Net Income", "Net Income Common Stockholders", "NetIncome")
+    _OPERATING_CASH_FLOW_ROWS = (
+        "Operating Cash Flow",
+        "Total Cash From Operating Activities",
+        "Cash Flow From Continuing Operating Activities",
+    )
+    _FREE_CASH_FLOW_ROWS = ("Free Cash Flow", "FreeCashFlow")
+    _CAPITAL_EXPENDITURE_ROWS = (
+        "Capital Expenditure",
+        "Capital Expenditures",
+        "CapitalExpenditure",
+    )
+    _CASH_ROWS = (
+        "Cash And Cash Equivalents",
+        "Cash Cash Equivalents And Short Term Investments",
+        "Cash And Short Term Investments",
+    )
+    _TOTAL_DEBT_ROWS = ("Total Debt", "TotalDebt")
+    _TOTAL_ASSETS_ROWS = ("Total Assets", "TotalAssets")
+    _TOTAL_LIABILITIES_ROWS = (
+        "Total Liabilities Net Minority Interest",
+        "Total Liab",
+        "Total Liabilities",
+    )
+    _SHAREHOLDERS_EQUITY_ROWS = (
+        "Stockholders Equity",
+        "Total Equity Gross Minority Interest",
+        "Total Stockholder Equity",
+    )
+    _EPS_ROWS = ("Diluted EPS", "Basic EPS", "DilutedEPS", "BasicEPS")
 
     def get_quote(self, symbol: str) -> QuoteResponse:
         normalized_symbol = self._normalize_symbol(symbol)
@@ -234,97 +270,51 @@ class YahooService:
             employees=self._first_int(info.get("fullTimeEmployees")),
             revenue_ttm=self._first_number(
                 info.get("totalRevenue"),
-                self._get_statement_value(
-                    income_statement,
-                    "Total Revenue",
-                    "TotalRevenue",
-                ),
+                self._get_statement_value(income_statement, *self._REVENUE_ROWS),
             ),
             gross_profit=self._first_number(
                 info.get("grossProfits"),
-                self._get_statement_value(
-                    income_statement,
-                    "Gross Profit",
-                    "GrossProfit",
-                ),
+                self._get_statement_value(income_statement, *self._GROSS_PROFIT_ROWS),
             ),
             ebitda=self._first_number(
                 info.get("ebitda"),
-                self._get_statement_value(
-                    income_statement,
-                    "EBITDA",
-                    "Normalized EBITDA",
-                ),
+                self._get_statement_value(income_statement, *self._EBITDA_ROWS),
             ),
             operating_income=self._first_number(
-                self._get_statement_value(
-                    income_statement,
-                    "Operating Income",
-                    "OperatingIncome",
-                )
+                self._get_statement_value(income_statement, *self._OPERATING_INCOME_ROWS)
             ),
             net_income=self._first_number(
                 info.get("netIncomeToCommon"),
-                self._get_statement_value(
-                    income_statement,
-                    "Net Income",
-                    "Net Income Common Stockholders",
-                    "NetIncome",
-                ),
+                self._get_statement_value(income_statement, *self._NET_INCOME_ROWS),
             ),
             operating_cash_flow=self._first_number(
                 info.get("operatingCashflow"),
-                self._get_statement_value(
-                    cash_flow,
-                    "Operating Cash Flow",
-                    "Total Cash From Operating Activities",
-                    "Cash Flow From Continuing Operating Activities",
-                ),
+                self._get_statement_value(cash_flow, *self._OPERATING_CASH_FLOW_ROWS),
             ),
             free_cash_flow=self._first_number(
                 info.get("freeCashflow"),
-                self._get_statement_value(cash_flow, "Free Cash Flow", "FreeCashFlow"),
+                self._get_statement_value(cash_flow, *self._FREE_CASH_FLOW_ROWS),
             ),
             capital_expenditure=self._first_number(
                 info.get("capitalExpenditures"),
-                self._get_statement_value(
-                    cash_flow,
-                    "Capital Expenditure",
-                    "Capital Expenditures",
-                    "CapitalExpenditure",
-                ),
+                self._get_statement_value(cash_flow, *self._CAPITAL_EXPENDITURE_ROWS),
             ),
             cash=self._first_number(
                 info.get("totalCash"),
-                self._get_statement_value(
-                    balance_sheet,
-                    "Cash And Cash Equivalents",
-                    "Cash Cash Equivalents And Short Term Investments",
-                    "Cash And Short Term Investments",
-                ),
+                self._get_statement_value(balance_sheet, *self._CASH_ROWS),
             ),
             total_debt=self._first_number(
                 info.get("totalDebt"),
-                self._get_statement_value(balance_sheet, "Total Debt", "TotalDebt"),
+                self._get_statement_value(balance_sheet, *self._TOTAL_DEBT_ROWS),
             ),
             total_assets=self._first_number(
-                self._get_statement_value(balance_sheet, "Total Assets", "TotalAssets")
+                self._get_statement_value(balance_sheet, *self._TOTAL_ASSETS_ROWS)
             ),
             total_liabilities=self._first_number(
-                self._get_statement_value(
-                    balance_sheet,
-                    "Total Liabilities Net Minority Interest",
-                    "Total Liab",
-                    "Total Liabilities",
-                )
+                self._get_statement_value(balance_sheet, *self._TOTAL_LIABILITIES_ROWS)
             ),
             total_equity=self._first_number(
-                self._get_statement_value(
-                    balance_sheet,
-                    "Stockholders Equity",
-                    "Total Equity Gross Minority Interest",
-                    "Total Stockholder Equity",
-                )
+                self._get_statement_value(balance_sheet, *self._SHAREHOLDERS_EQUITY_ROWS)
             ),
             book_value_per_share=self._first_number(info.get("bookValue")),
             eps=self._first_number(info.get("trailingEps"), info.get("forwardEps")),
@@ -342,6 +332,117 @@ class YahooService:
             dividend_yield=self._first_number(info.get("dividendYield")),
         )
 
+    def get_financial_history(self, symbol: str) -> FinancialHistoryResponse:
+        normalized_symbol = self._normalize_symbol(symbol)
+        ticker = yf.Ticker(normalized_symbol)
+
+        info = self._get_info(ticker=ticker, symbol=normalized_symbol)
+        if self._is_invalid_symbol_info(info):
+            raise SymbolNotFoundError(normalized_symbol)
+
+        fast_info = self._get_fast_info(ticker=ticker)
+        income_statement = self._get_statement(
+            ticker=ticker,
+            attribute_name="financials",
+            symbol=normalized_symbol,
+            raise_on_error=True,
+        )
+        cash_flow = self._get_statement(
+            ticker=ticker,
+            attribute_name="cashflow",
+            symbol=normalized_symbol,
+            raise_on_error=True,
+        )
+        balance_sheet = self._get_statement(
+            ticker=ticker,
+            attribute_name="balance_sheet",
+            symbol=normalized_symbol,
+            raise_on_error=True,
+        )
+
+        annual_items: List[FinancialHistoryAnnualItem] = []
+        for year in self._get_statement_years(income_statement, cash_flow, balance_sheet):
+            annual_items.append(
+                FinancialHistoryAnnualItem(
+                    year=year,
+                    revenue=self._get_statement_value_by_year(
+                        income_statement,
+                        year,
+                        *self._REVENUE_ROWS,
+                    ),
+                    gross_profit=self._get_statement_value_by_year(
+                        income_statement,
+                        year,
+                        *self._GROSS_PROFIT_ROWS,
+                    ),
+                    operating_income=self._get_statement_value_by_year(
+                        income_statement,
+                        year,
+                        *self._OPERATING_INCOME_ROWS,
+                    ),
+                    net_income=self._get_statement_value_by_year(
+                        income_statement,
+                        year,
+                        *self._NET_INCOME_ROWS,
+                    ),
+                    operating_cash_flow=self._get_statement_value_by_year(
+                        cash_flow,
+                        year,
+                        *self._OPERATING_CASH_FLOW_ROWS,
+                    ),
+                    free_cash_flow=self._get_statement_value_by_year(
+                        cash_flow,
+                        year,
+                        *self._FREE_CASH_FLOW_ROWS,
+                    ),
+                    capital_expenditure=self._get_statement_value_by_year(
+                        cash_flow,
+                        year,
+                        *self._CAPITAL_EXPENDITURE_ROWS,
+                    ),
+                    cash=self._get_statement_value_by_year(
+                        balance_sheet,
+                        year,
+                        *self._CASH_ROWS,
+                    ),
+                    total_debt=self._get_statement_value_by_year(
+                        balance_sheet,
+                        year,
+                        *self._TOTAL_DEBT_ROWS,
+                    ),
+                    total_assets=self._get_statement_value_by_year(
+                        balance_sheet,
+                        year,
+                        *self._TOTAL_ASSETS_ROWS,
+                    ),
+                    total_liabilities=self._get_statement_value_by_year(
+                        balance_sheet,
+                        year,
+                        *self._TOTAL_LIABILITIES_ROWS,
+                    ),
+                    shareholders_equity=self._get_statement_value_by_year(
+                        balance_sheet,
+                        year,
+                        *self._SHAREHOLDERS_EQUITY_ROWS,
+                    ),
+                    eps=self._get_statement_value_by_year(
+                        income_statement,
+                        year,
+                        *self._EPS_ROWS,
+                    ),
+                )
+            )
+
+        return FinancialHistoryResponse(
+            symbol=normalized_symbol,
+            currency=self._first_string(
+                info.get("currency"),
+                info.get("financialCurrency"),
+                fast_info.get("currency"),
+            ),
+            annual=annual_items,
+        )
+
     def _get_info(self, ticker: Any, symbol: str) -> Dict[str, Any]:
         try:
             info = ticker.info
@@ -354,30 +455,107 @@ class YahooService:
             return {}
         return info
 
-    def _get_statement(self, ticker: Any, attribute_name: str) -> Any:
+    def _get_statement(
+        self,
+        ticker: Any,
+        attribute_name: str,
+        symbol: Optional[str] = None,
+        raise_on_error: bool = False,
+    ) -> Any:
         try:
             return getattr(ticker, attribute_name)
-        except Exception:
+        except Exception as exc:
+            if raise_on_error:
+                if symbol is not None and self._looks_like_missing_symbol_error(exc):
+                    raise SymbolNotFoundError(symbol) from exc
+
+                statement_name = attribute_name.replace("_", " ")
+                if symbol is None:
+                    raise MarketDataUnavailableError(
+                        f"Unable to fetch Yahoo Finance {statement_name}."
+                    ) from exc
+                raise MarketDataUnavailableError(
+                    f"Unable to fetch Yahoo Finance {statement_name} for '{symbol}'."
+                ) from exc
+
             return None
 
     def _get_statement_value(self, statement: Any, *row_names: str) -> Optional[float]:
+        return self._get_statement_value_for_columns(
+            statement=statement,
+            columns=self._get_statement_columns(statement),
+            row_names=row_names,
+        )
+
+    def _get_statement_value_by_year(
+        self,
+        statement: Any,
+        year: int,
+        *row_names: str,
+    ) -> Optional[float]:
+        columns = [
+            column
+            for column in self._get_statement_columns(statement)
+            if self._column_to_year(column) == year
+        ]
+        return self._get_statement_value_for_columns(
+            statement=statement,
+            columns=columns,
+            row_names=row_names,
+        )
+
+    def _get_statement_value_for_columns(
+        self,
+        statement: Any,
+        columns: List[Any],
+        row_names: Sequence[str],
+    ) -> Optional[float]:
         if statement is None or getattr(statement, "empty", True):
             return None
 
         for row_name in row_names:
-            try:
-                if row_name not in statement.index:
-                    continue
-                row_values = statement.loc[row_name]
-            except Exception:
+            if not self._statement_has_row(statement=statement, row_name=row_name):
                 continue
 
-            values = self._series_to_values(row_values)
-            value = self._first_number(*values)
-            if value is not None:
-                return value
+            for column in columns:
+                try:
+                    raw_value = statement.loc[row_name, column]
+                except Exception:
+                    continue
+
+                value = self._first_number(*self._series_to_values(raw_value))
+                if value is not None:
+                    return value
 
         return None
+
+    def _get_statement_years(self, *statements: Any) -> List[int]:
+        years: Set[int] = set()
+
+        for statement in statements:
+            for column in self._get_statement_columns(statement):
+                year = self._column_to_year(column)
+                if year is not None:
+                    years.add(year)
+
+        return sorted(years, reverse=True)
+
+    @staticmethod
+    def _get_statement_columns(statement: Any) -> List[Any]:
+        if statement is None or getattr(statement, "empty", True):
+            return []
+
+        try:
+            return list(statement.columns)
+        except Exception:
+            return []
+
+    @staticmethod
+    def _statement_has_row(statement: Any, row_name: str) -> bool:
+        try:
+            return row_name in statement.index
+        except Exception:
+            return False
 
     def _get_fast_info(self, ticker: Any) -> Dict[str, Any]:
         keys = (
@@ -497,6 +675,23 @@ class YahooService:
         if hasattr(value, "date"):
             return value.date()
         return date.fromisoformat(str(value)[:10])
+
+    @staticmethod
+    def _column_to_year(value: Any) -> Optional[int]:
+        if hasattr(value, "year"):
+            try:
+                return int(value.year)
+            except (TypeError, ValueError):
+                return None
+
+        string_value = str(value).strip()
+        if len(string_value) < 4:
+            return None
+
+        try:
+            return int(string_value[:4])
+        except ValueError:
+            return None
 
     @staticmethod
     def _series_to_values(value: Any) -> List[Any]:
