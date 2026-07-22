@@ -1,7 +1,15 @@
 from fastapi import FastAPI
 
 from app.models import HealthResponse
-from app.routers import financial_history, financials, historical, quote, search
+from app.routers import (
+    financial_history,
+    financials,
+    historical,
+    metrics,
+    quote,
+    score,
+    search,
+)
 
 API_VERSION = "1.0.0"
 
@@ -18,6 +26,8 @@ def create_app() -> FastAPI:
     application.include_router(historical.router)
     application.include_router(financials.router)
     application.include_router(financial_history.router)
+    application.include_router(metrics.router)
+    application.include_router(score.router)
 
     @application.get("/", response_model=HealthResponse, tags=["Health"])
     def health_check() -> HealthResponse:

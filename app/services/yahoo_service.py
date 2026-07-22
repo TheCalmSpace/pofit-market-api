@@ -237,7 +237,10 @@ class YahooService:
         normalized_symbol = self._normalize_symbol(symbol)
         ticker = yf.Ticker(normalized_symbol)
 
-        info = self._get_info(ticker=ticker, symbol=normalized_symbol)
+        info = self._get_info(
+    ticker=ticker,
+    symbol=normalized_symbol,
+)
         if self._is_invalid_symbol_info(info):
             raise SymbolNotFoundError(normalized_symbol)
 
