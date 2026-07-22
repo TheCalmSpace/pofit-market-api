@@ -447,7 +447,7 @@ class YahooService:
             annual=annual_items,
         )
 
-       def _get_info(self, ticker: Any, symbol: str) -> Dict[str, Any]:
+    def _get_info(self, ticker: Any, symbol: str) -> Dict[str, Any]:
         try:
             info = ticker.info
         except Exception as exc:
