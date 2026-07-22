@@ -450,7 +450,7 @@ class YahooService:
     def _get_info(self, ticker: Any, symbol: str) -> Dict[str, Any]:
         try:
             info = ticker.info
-        except Exception as exc:
+                except Exception as exc:
             if self._looks_like_missing_symbol_error(exc):
                 raise SymbolNotFoundError(symbol) from exc
 
@@ -460,9 +460,9 @@ class YahooService:
             print("=" * 80)
 
             raise MarketDataUnavailableError(
-                f"Unable to fetch quote data for '{symbol}'."
+                f"Unable to fetch quote data for '{symbol}'. "
+                f"{type(exc).__name__}: {exc}"
             ) from exc
-
         if not isinstance(info, dict):
             return {}
 
