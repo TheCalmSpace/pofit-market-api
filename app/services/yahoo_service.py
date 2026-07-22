@@ -447,11 +447,11 @@ class YahooService:
             annual=annual_items,
         )
 
-    def _get_info(self, ticker: Any, symbol: str) -> Dict[str, Any]:
-        try:
-            info = ticker.info
-        except Exception as exc:
-         if self._looks_like_missing_symbol_error(exc):
+   def _get_info(self, ticker: Any, symbol: str) -> Dict[str, Any]:
+    try:
+        info = ticker.info
+    except Exception as exc:
+        if self._looks_like_missing_symbol_error(exc):
             raise SymbolNotFoundError(symbol) from exc
 
         print("=" * 80)
