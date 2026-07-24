@@ -1,30 +1,24 @@
-from fastapi import APIRouter, HTTPException, Query, status
+from typing import Optional
 
-from app.models import ErrorResponse, SearchResponse
-from app.services import InvalidMarketDataRequestError, MarketDataUnavailableError, YahooService
+from fastapi import APIRouter, Query
 
-router = APIRouter(prefix="/search", tags=["Search"])
-yahoo_service = YahooService()
+from app.repositories.stock_repository import StockRepository
 
-
-@router.get(
-    "",
-    response_model=SearchResponse,
-    responses={
-        400: {"model": ErrorResponse},
-        503: {"model": ErrorResponse},
-    },
+router = APIRouter(
+    prefix="/search",
+    tags=["Search"],
 )
-def search_symbols(q: str = Query(..., min_length=1)) -> SearchResponse:
-    try:
-        return yahoo_service.search_symbols(q)
-    except InvalidMarketDataRequestError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
-        ) from exc
-    except MarketDataUnavailableError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
-        ) from exc
+
+stock_repo = StockRepository()
+
+
+@router.get("")
+def search_symbols(
+    q: str = Query(..., min_length=1),
+    country: Optional[str] = None,
+):
+    return stock_repo.search(
+        query=q,
+        country=country,
+        limit=20,
+    )

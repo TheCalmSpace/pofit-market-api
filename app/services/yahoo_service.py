@@ -257,8 +257,13 @@ class YahooService:
                 info.get("shortName"),
                 info.get("displayName"),
             ),
-            sector=self._first_string(info.get("sector")),
-            industry=self._first_string(info.get("industry")),
+            sector=self._first_string(
+            info.get("sector"),
+            info.get("industry"),
+            ),
+            industry=self._first_string(
+            info.get("industry"),
+            ),
             country=self._first_string(info.get("country")),
             currency=self._first_string(
                 info.get("currency"),
@@ -450,6 +455,12 @@ class YahooService:
     def _get_info(self, ticker: Any, symbol: str) -> Dict[str, Any]:
         try:
             info = ticker.info
+            print("=" * 80)
+            print("SYMBOL:", symbol)
+            print("SECTOR:", info.get("sector"))
+            print("INDUSTRY:", info.get("industry"))
+            print("KEYS:", list(info.keys())[:30])
+            print("=" * 80)
         except Exception as exc:
             if self._looks_like_missing_symbol_error(exc):
                 raise SymbolNotFoundError(symbol) from exc

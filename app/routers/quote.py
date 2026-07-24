@@ -1,10 +1,19 @@
 from fastapi import APIRouter, HTTPException, status
 
 from app.models import ErrorResponse, QuoteResponse
-from app.services import MarketDataUnavailableError, SymbolNotFoundError, YahooService
 
-router = APIRouter(prefix="/quote", tags=["Quote"])
-yahoo_service = YahooService()
+from app.services.market_data_service import MarketDataService
+from app.services.yahoo_service import (
+    MarketDataUnavailableError,
+    SymbolNotFoundError,
+)
+
+router = APIRouter(
+    prefix="/quote",
+    tags=["Quote"],
+)
+
+market_service = MarketDataService()
 
 
 @router.get(
@@ -17,12 +26,17 @@ yahoo_service = YahooService()
 )
 def get_quote(symbol: str) -> QuoteResponse:
     try:
-        return yahoo_service.get_quote(symbol)
+
+        stock = market_service.get_stock(symbol)
+
+        return QuoteResponse(**stock["quote_json"])
+
     except SymbolNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
+
     except MarketDataUnavailableError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
