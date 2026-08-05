@@ -45,6 +45,7 @@ class StockRepository:
         self,
         symbol: str,
     ) -> Optional[Dict[str, Any]]:
+
         result = (
             supabase.table("stocks")
             .select("*")
@@ -64,6 +65,7 @@ class StockRepository:
         country: str,
         limit: int = 100,
     ) -> List[Dict[str, Any]]:
+
         result = (
             supabase.table("stocks")
             .select(
@@ -76,6 +78,45 @@ class StockRepository:
         )
 
         return result.data or []
+
+    def list_all_by_country(
+        self,
+        country: str,
+    ) -> List[Dict[str, Any]]:
+        """
+        Returns every active stock for the specified country.
+        Used by the Daily Top Picks engine.
+        """
+
+        all_stocks: List[Dict[str, Any]] = []
+        page_size = 1000
+        offset = 0
+
+        while True:
+            result = (
+                supabase.table("stocks")
+                .select(
+                    "symbol, company_name, exchange, country"
+                )
+                .eq("country", country)
+                .eq("is_active", True)
+                .range(offset, offset + page_size - 1)
+                .execute()
+            )
+
+            rows = result.data or []
+
+            if not rows:
+                break
+
+            all_stocks.extend(rows)
+
+            if len(rows) < page_size:
+                break
+
+            offset += page_size
+
+        return all_stocks
 
     def update_metadata(
         self,

@@ -116,28 +116,41 @@ class YahooService:
             raise SymbolNotFoundError(normalized_symbol)
 
         return QuoteResponse(
-            symbol=normalized_symbol,
-            company_name=self._first_string(
-                info.get("longName"),
-                info.get("shortName"),
-                info.get("displayName"),
-                normalized_symbol,
-            )
-            or normalized_symbol,
-            current_price=current_price,
-            currency=self._first_string(info.get("currency"), fast_info.get("currency")),
-            exchange=self._first_string(
-                info.get("exchange"),
-                info.get("fullExchangeName"),
-                fast_info.get("exchange"),
-            ),
-            market_cap=self._first_int(info.get("marketCap"), fast_info.get("market_cap")),
-            previous_close=self._first_number(
-                info.get("previousClose"),
-                info.get("regularMarketPreviousClose"),
-                fast_info.get("previous_close"),
-            ),
+    symbol=normalized_symbol,
+    company_name=(
+        self._first_string(
+            info.get("longName"),
+            info.get("shortName"),
+            info.get("displayName"),
+            normalized_symbol,
         )
+        or normalized_symbol
+    ),
+    current_price=current_price,
+    currency=self._first_string(
+        info.get("currency"),
+        fast_info.get("currency"),
+    ),
+    exchange=self._first_string(
+        info.get("exchange"),
+        info.get("fullExchangeName"),
+        fast_info.get("exchange"),
+    ),
+    market_cap=self._first_int(
+        info.get("marketCap"),
+        fast_info.get("market_cap"),
+    ),
+    previous_close=self._first_number(
+        info.get("previousClose"),
+        info.get("regularMarketPreviousClose"),
+        fast_info.get("previous_close"),
+    ),
+    average_volume_90d=self._first_int(
+        info.get("averageDailyVolume3Month"),
+        info.get("averageVolume"),
+        fast_info.get("average_volume"),
+    ),
+      )
 
     def search_symbols(self, query: str, max_results: int = 8) -> SearchResponse:
         clean_query = query.strip()
@@ -590,6 +603,7 @@ class YahooService:
             "lastPrice",
             "market_cap",
             "previous_close",
+            "average_volume",
         )
         fast_info: Dict[str, Any] = {}
 

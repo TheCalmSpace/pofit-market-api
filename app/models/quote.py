@@ -16,11 +16,18 @@ class ErrorResponse(BaseModel):
 class QuoteResponse(BaseModel):
     symbol: str
     company_name: str
+
     current_price: float
+
     currency: Optional[str] = None
     exchange: Optional[str] = None
+
     market_cap: Optional[int] = None
+
     previous_close: Optional[float] = None
+
+    # 3-month average daily traded volume (shares)
+    average_volume_90d: Optional[int] = None
 
 
 class SearchResult(BaseModel):

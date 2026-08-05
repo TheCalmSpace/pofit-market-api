@@ -10,6 +10,8 @@ from app.services.yahoo_service import (
 )
 from app.services.metrics_service import MetricsService
 from app.services.score_service import ScoreService
+from app.services.explanation_service import ExplanationService
+from app.services.eligibility_service import EligibilityService
 
 from app.utils.model_utils import to_dict
 
@@ -26,6 +28,8 @@ class MarketDataService:
         self.yahoo = YahooService()
         self.metrics = MetricsService()
         self.score = ScoreService()
+        self.explanation = ExplanationService()
+        self.eligibility = EligibilityService()
 
     def get_stock(
         self,
@@ -53,11 +57,32 @@ class MarketDataService:
 
         symbol = symbol.upper()
 
-        quote = self.yahoo.get_quote(symbol)
+        stock = self.stock_repo.get_by_symbol(symbol)
 
-        financials = self.yahoo.get_financials(symbol)
+        if stock is None:
+            raise SymbolNotFoundError(symbol)
 
-        history = self.yahoo.get_financial_history(symbol)
+        exchange = (stock.get("exchange") or "").upper()
+
+        yahoo_symbol = symbol
+
+        if "." not in yahoo_symbol:
+            if exchange == "NSE":
+                yahoo_symbol = f"{symbol}.NS"
+            elif exchange == "BSE":
+                yahoo_symbol = f"{symbol}.BO"
+
+        print("=" * 80)
+        print(f"DB SYMBOL    : {symbol}")
+        print(f"EXCHANGE     : {exchange}")
+        print(f"YAHOO SYMBOL : {yahoo_symbol}")
+        print("=" * 80)
+
+        quote = self.yahoo.get_quote(yahoo_symbol)
+
+        financials = self.yahoo.get_financials(yahoo_symbol)
+
+        history = self.yahoo.get_financial_history(yahoo_symbol)
 
         self.stock_repo.update_metadata(
             symbol=symbol,
@@ -71,14 +96,36 @@ class MarketDataService:
         )
 
         score = self.score.build_score(metrics)
+        explanation = self.explanation.build_explanation(score)
+
+        eligibility = self.eligibility.build(
+            quote=quote,
+            financials=financials,
+        )
+
+        print("=" * 80)
+        print("ELIGIBILITY OBJECT")
+        print(eligibility)
+        print("=" * 80)
+
+        print("ELIGIBILITY DICT")
+        print(to_dict(eligibility))
+        print("=" * 80)
 
         payload = {
             "quote_json": to_dict(quote),
             "metrics_json": to_dict(metrics),
             "score_json": to_dict(score),
+            "eligibility_json": to_dict(eligibility),
+            "explanation_json": to_dict(explanation),
             "cache_status": "fresh",
             "updated_at": datetime.utcnow().isoformat(),
         }
+
+        print("=" * 80)
+        print("PAYLOAD KEYS")
+        print(payload.keys())
+        print("=" * 80)
 
         self.stock_data_repo.save(
             symbol,
