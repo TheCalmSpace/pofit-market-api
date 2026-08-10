@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 from app.core.supabase import supabase
 
@@ -33,6 +33,16 @@ class StockDataRepository:
         )
 
         return result.data[0]
+
+    def list_all_metrics(self) -> List[Dict[str, Any]]:
+        """Return cached metrics for the full stock universe."""
+        result = (
+            supabase.table("stock_data")
+            .select("symbol,metrics_json")
+            .execute()
+        )
+
+        return result.data or []
 
     def exists(self, symbol: str) -> bool:
         result = (

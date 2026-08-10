@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from app.models import HealthResponse
 
 from app.routers import (
+    daily_top_picks,
     financial_history,
     financials,
     historical,
@@ -12,7 +13,7 @@ from app.routers import (
     quote,
     score,
     search,
-    daily_top_picks,
+    subscription,
 )
 
 from app.scheduler import start_scheduler
@@ -66,6 +67,10 @@ def create_app() -> FastAPI:
 
     application.include_router(
         daily_top_picks.router
+    )
+
+    application.include_router(
+        subscription.router
     )
 
     from app.routers import alpha

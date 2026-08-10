@@ -5,6 +5,7 @@ from app.repositories.daily_top_picks_repository import (
     DailyTopPicksRepository,
 )
 from app.services.market_data_service import MarketDataService
+from app.services.alpha_filter_service import AlphaFilterService
 from app.services.yahoo_service import (
     MarketDataUnavailableError,
     SymbolNotFoundError,
@@ -23,6 +24,7 @@ class DailyTopPicksService:
     def __init__(self):
 
         self.market = MarketDataService()
+        self.alpha_filter = AlphaFilterService()
 
         self.stock_repo = StockRepository()
 
@@ -61,6 +63,20 @@ class DailyTopPicksService:
                 payload = self.market.get_stock(symbol)
 
                 print(f"{symbol} -> payload keys: {list(payload.keys())}")
+
+                eligibility = payload.get("eligibility_json")
+                if not eligibility:
+                    print(f"{symbol} -> NO ELIGIBILITY DATA")
+                    continue
+
+                eligible, reason = self.alpha_filter.is_eligible(
+                    country=country,
+                    eligibility=eligibility,
+                )
+
+                if not eligible:
+                    print(f"{symbol} -> NOT ELIGIBLE: {reason}")
+                    continue
 
                 score = payload.get("score_json")
 

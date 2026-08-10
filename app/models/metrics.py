@@ -40,6 +40,8 @@ class FinancialStrengthMetrics(BaseModel):
 class ValuationMetrics(BaseModel):
     pe: Optional[float] = None
 
+    relative_pe: Optional[float] = None
+
     peg: Optional[float] = None
 
     price_to_book: Optional[float] = None

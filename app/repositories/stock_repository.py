@@ -60,6 +60,17 @@ class StockRepository:
 
         return result.data[0]
 
+    def list_all_active(self) -> List[Dict[str, Any]]:
+        """Return the full active stock universe for benchmarking."""
+        result = (
+            supabase.table("stocks")
+            .select("symbol,sector,industry")
+            .eq("is_active", True)
+            .execute()
+        )
+
+        return result.data or []
+
     def list_country(
         self,
         country: str,

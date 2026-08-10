@@ -26,6 +26,9 @@ from app.models.metrics import (
     QualityMetrics,
     ValuationMetrics,
 )
+from app.repositories.stock_data_repository import StockDataRepository
+from app.repositories.stock_repository import StockRepository
+from app.services.valuation_benchmark_service import ValuationBenchmarkService
 
 from app.utils.math_utils import (
     average,
@@ -280,10 +283,25 @@ class MetricsService:
     ) -> ValuationMetrics:
         """
         Calculate valuation metrics.
+
+        This method preserves the existing trailing PE signal and
+        computes a non-mandatory relative PE benchmark when enough peers exist.
+        The existing valuation score logic remains unchanged.
         """
+
+        benchmark_service = ValuationBenchmarkService(
+            StockRepository(),
+            StockDataRepository(),
+        )
+
+        relative_pe = benchmark_service.build_relative_pe(
+            symbol=financials.symbol,
+            company_pe=financials.trailing_pe,
+        )
 
         return ValuationMetrics(
             pe=financials.trailing_pe,
+            relative_pe=relative_pe,
             peg=financials.peg_ratio,
             price_to_book=financials.price_to_book,
         )

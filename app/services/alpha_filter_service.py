@@ -1,4 +1,4 @@
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, Union
 
 from app.models.eligibility import EligibilityResponse
 
@@ -21,7 +21,7 @@ class AlphaFilterService:
     def is_eligible(
         self,
         country: str,
-        eligibility: EligibilityResponse | Dict[str, Any],
+        eligibility: Union[EligibilityResponse, Dict[str, Any]],
     ) -> Tuple[bool, str]:
 
         if isinstance(eligibility, dict):
