@@ -129,6 +129,36 @@ class StockRepository:
 
         return all_stocks
 
+    def list_by_status(
+        self,
+        status: str,
+        country: Optional[str] = None,
+        exchange: Optional[str] = None,
+        limit: int = 1000,
+    ) -> List[Dict[str, Any]]:
+        """
+        Returns stocks by radar status.
+        Used by the Radar endpoint.
+        """
+        query = (
+            supabase.table("stocks")
+            .select(
+                "symbol, company_name, exchange, country, isin, status, first_listed_date, last_synced_at"
+            )
+            .eq("status", status)
+            .limit(limit)
+        )
+
+        if country:
+            query = query.eq("country", country)
+
+        if exchange:
+            query = query.eq("exchange", exchange)
+
+        result = query.execute()
+
+        return result.data or []
+
     def update_metadata(
         self,
         symbol: str,

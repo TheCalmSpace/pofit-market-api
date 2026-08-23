@@ -54,6 +54,8 @@ class HistoricalPrice(BaseModel):
 
 
 class HistoricalResponse(BaseModel):
+    data_status: str = "available"
+    unavailable_reason: Optional[str] = None
     symbol: str
     period: str
     interval: str

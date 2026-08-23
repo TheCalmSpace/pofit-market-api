@@ -21,6 +21,8 @@ class FinancialHistoryAnnualItem(BaseModel):
 
 
 class FinancialHistoryResponse(BaseModel):
+    data_status: str = "available"
+    unavailable_reason: Optional[str] = None
     symbol: str
     currency: Optional[str] = None
     annual: List[FinancialHistoryAnnualItem]

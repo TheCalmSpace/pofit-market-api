@@ -1,15 +1,18 @@
 from fastapi import APIRouter, HTTPException, Query, status
 
 from app.models import ErrorResponse, HistoricalResponse
+from app.repositories.stock_repository import StockRepository
 from app.services import (
     InvalidMarketDataRequestError,
     MarketDataUnavailableError,
     SymbolNotFoundError,
     YahooService,
 )
+from app.utils.symbol import resolve_yahoo_symbol
 
 router = APIRouter(prefix="/historical", tags=["Historical"])
 yahoo_service = YahooService()
+stock_repo = StockRepository()
 
 
 @router.get(
@@ -26,9 +29,10 @@ def get_historical_prices(
     period: str = Query("1mo", min_length=2),
     interval: str = Query("1d", min_length=2),
 ) -> HistoricalResponse:
+    resolved = _resolve_symbol(symbol)
     try:
         return yahoo_service.get_historical_prices(
-            symbol=symbol,
+            symbol=resolved,
             period=period,
             interval=interval,
         )
@@ -47,3 +51,9 @@ def get_historical_prices(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
         ) from exc
+
+
+def _resolve_symbol(symbol: str) -> str:
+    stock = stock_repo.get_by_symbol(symbol.upper())
+    exchange = stock.get("exchange") if stock else None
+    return resolve_yahoo_symbol(symbol.upper(), exchange)

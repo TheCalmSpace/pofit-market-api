@@ -4,10 +4,7 @@ from typing import Any, Dict, Optional
 from app.repositories.stock_repository import StockRepository
 from app.repositories.stock_data_repository import StockDataRepository
 
-from app.services.yahoo_service import (
-    YahooService,
-    SymbolNotFoundError,
-)
+from app.services.yahoo_service import YahooService, SymbolNotFoundError
 from app.services.metrics_service import MetricsService
 from app.services.score_service import ScoreService
 from app.services.explanation_service import ExplanationService
@@ -90,42 +87,35 @@ class MarketDataService:
             industry=financials.industry,
         )
 
-        metrics = self.metrics.build_metrics(
-            history,
-            financials,
-        )
-
-        score = self.score.build_score(metrics)
-        explanation = self.explanation.build_explanation(score)
-
         eligibility = self.eligibility.build(
             quote=quote,
             financials=financials,
         )
 
-        print("=" * 80)
-        print("ELIGIBILITY OBJECT")
-        print(eligibility)
-        print("=" * 80)
+        required_financial_data_available = (
+            financials.data_status == "available"
+            and history.data_status == "available"
+        )
 
-        print("ELIGIBILITY DICT")
-        print(to_dict(eligibility))
-        print("=" * 80)
+        metrics = None
+        score = None
+        explanation = None
+        if required_financial_data_available:
+            metrics = self.metrics.build_metrics(history, financials)
+            score = self.score.build_score(metrics)
+            explanation = self.explanation.build_explanation(score)
 
         payload = {
             "quote_json": to_dict(quote),
-            "metrics_json": to_dict(metrics),
-            "score_json": to_dict(score),
+            "metrics_json": to_dict(metrics) if metrics else None,
+            "score_json": to_dict(score) if score else None,
             "eligibility_json": to_dict(eligibility),
-            "explanation_json": to_dict(explanation),
-            "cache_status": "fresh",
+            "explanation_json": to_dict(explanation) if explanation else None,
+            "financials_json": to_dict(financials),
+            "financial_history_json": to_dict(history),
+            "cache_status": "fresh" if required_financial_data_available else "partial",
             "updated_at": datetime.utcnow().isoformat(),
         }
-
-        print("=" * 80)
-        print("PAYLOAD KEYS")
-        print(payload.keys())
-        print("=" * 80)
 
         self.stock_data_repo.save(
             symbol,
@@ -142,7 +132,7 @@ class MarketDataService:
         if cached is None:
             return False
 
-        if cached.get("cache_status") != "fresh":
+        if cached.get("cache_status") not in {"fresh", "partial"}:
             return False
 
         updated = cached.get("updated_at")

@@ -48,6 +48,8 @@ class ValuationMetrics(BaseModel):
 
 
 class MetricsResponse(BaseModel):
+    data_status: str = "available"
+    unavailable_reason: Optional[str] = None
     symbol: str
 
     growth: GrowthMetrics

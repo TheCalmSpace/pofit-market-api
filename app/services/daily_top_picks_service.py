@@ -1,3 +1,4 @@
+import logging
 from typing import Any, Dict, List
 
 from app.repositories.stock_repository import StockRepository
@@ -20,6 +21,8 @@ class DailyTopPicksService:
     caching, metrics calculation and scoring continue to live in one
     place.
     """
+
+    logger = logging.getLogger(__name__)
 
     def __init__(self):
 
@@ -66,7 +69,14 @@ class DailyTopPicksService:
 
                 eligibility = payload.get("eligibility_json")
                 if not eligibility:
-                    print(f"{symbol} -> NO ELIGIBILITY DATA")
+                    self.logger.info("Skipping %s: eligibility data unavailable", symbol)
+                    continue
+
+                if payload.get("score_json") is None:
+                    self.logger.info(
+                        "Skipping %s: required financial or historical financial data unavailable",
+                        symbol,
+                    )
                     continue
 
                 eligible, reason = self.alpha_filter.is_eligible(
@@ -102,12 +112,8 @@ class DailyTopPicksService:
                     }
                 )
 
-            except Exception as e:
-                print("=" * 80)
-                print(f"FAILED: {symbol}")
-                print(type(e).__name__)
-                print(str(e))
-                print("=" * 80)
+            except Exception:
+                self.logger.exception("Skipping %s after an unexpected data-processing failure", symbol)
                 continue
 
         print("=" * 80)

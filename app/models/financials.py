@@ -4,6 +4,8 @@ from pydantic import BaseModel
 
 
 class FinancialsResponse(BaseModel):
+    data_status: str = "available"
+    unavailable_reason: Optional[str] = None
     symbol: Optional[str] = None
     company_name: Optional[str] = None
     sector: Optional[str] = None

@@ -5,12 +5,14 @@ from fastapi import FastAPI
 from app.models import HealthResponse
 
 from app.routers import (
+    alpha,
     daily_top_picks,
     financial_history,
     financials,
     historical,
     metrics,
     quote,
+    radar,
     score,
     search,
     subscription,
@@ -71,6 +73,10 @@ def create_app() -> FastAPI:
 
     application.include_router(
         subscription.router
+    )
+
+    application.include_router(
+        radar.router
     )
 
     from app.routers import alpha

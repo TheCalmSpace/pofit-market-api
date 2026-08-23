@@ -224,7 +224,17 @@ class YahooService:
             ) from exc
 
         if history is None or history.empty:
-            raise SymbolNotFoundError(normalized_symbol)
+            # A known symbol can legitimately have no data for a requested
+            # period.  This is a dataset gap, not proof that the symbol does
+            # not exist, so callers can render their remaining sections.
+            return HistoricalResponse(
+                symbol=normalized_symbol,
+                period=normalized_period,
+                interval=normalized_interval,
+                prices=[],
+                data_status="unavailable",
+                unavailable_reason="Price history unavailable for the requested period.",
+            )
 
         prices: List[HistoricalPrice] = []
         for index, row in history.iterrows():
@@ -259,11 +269,28 @@ class YahooService:
             raise SymbolNotFoundError(normalized_symbol)
 
         fast_info = self._get_fast_info(ticker=ticker)
-        income_statement = self._get_statement(ticker=ticker, attribute_name="financials")
-        cash_flow = self._get_statement(ticker=ticker, attribute_name="cashflow")
-        balance_sheet = self._get_statement(ticker=ticker, attribute_name="balance_sheet")
+        # An empty statement is an expected coverage gap. A fetch exception is
+        # an upstream failure and must remain visible as such.
+        income_statement = self._get_statement(
+            ticker=ticker,
+            attribute_name="financials",
+            symbol=normalized_symbol,
+            raise_on_error=True,
+        )
+        cash_flow = self._get_statement(
+            ticker=ticker,
+            attribute_name="cashflow",
+            symbol=normalized_symbol,
+            raise_on_error=True,
+        )
+        balance_sheet = self._get_statement(
+            ticker=ticker,
+            attribute_name="balance_sheet",
+            symbol=normalized_symbol,
+            raise_on_error=True,
+        )
 
-        return FinancialsResponse(
+        financials = FinancialsResponse(
             symbol=normalized_symbol,
             company_name=self._first_string(
                 info.get("longName"),
@@ -353,6 +380,31 @@ class YahooService:
             operating_margin=self._first_number(info.get("operatingMargins")),
             dividend_yield=self._first_number(info.get("dividendYield")),
         )
+
+        financial_values = (
+            financials.revenue_ttm,
+            financials.net_income,
+            financials.total_equity,
+            financials.total_assets,
+            financials.operating_cash_flow,
+        )
+        if not any(value is not None for value in financial_values):
+            return financials.model_copy(
+                update={
+                    "data_status": "unavailable",
+                    "unavailable_reason": "Financial data unavailable for this stock.",
+                }
+            )
+
+        if any(value is None for value in financial_values):
+            return financials.model_copy(
+                update={
+                    "data_status": "partial",
+                    "unavailable_reason": "Some financial data is unavailable for this stock.",
+                }
+            )
+
+        return financials
 
     def get_financial_history(self, symbol: str) -> FinancialHistoryResponse:
         normalized_symbol = self._normalize_symbol(symbol)
@@ -455,7 +507,7 @@ class YahooService:
                 )
             )
 
-        return FinancialHistoryResponse(
+        history_response = FinancialHistoryResponse(
             symbol=normalized_symbol,
             currency=self._first_string(
                 info.get("currency"),
@@ -464,6 +516,16 @@ class YahooService:
             ),
             annual=annual_items,
         )
+
+        if not annual_items:
+            return history_response.model_copy(
+                update={
+                    "data_status": "unavailable",
+                    "unavailable_reason": "Historical financial data unavailable for this stock.",
+                }
+            )
+
+        return history_response
 
     def _get_info(self, ticker: Any, symbol: str) -> Dict[str, Any]:
         try:
@@ -504,9 +566,6 @@ class YahooService:
             return getattr(ticker, attribute_name)
         except Exception as exc:
             if raise_on_error:
-                if symbol is not None and self._looks_like_missing_symbol_error(exc):
-                    raise SymbolNotFoundError(symbol) from exc
-
                 statement_name = attribute_name.replace("_", " ")
                 if symbol is None:
                     raise MarketDataUnavailableError(
