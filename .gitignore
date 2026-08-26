@@ -1,16 +1,28 @@
-# Virtual environment
+# Python
 .venv/
-
-# Python cache
+venv/
 __pycache__/
 *.py[cod]
 
+# Node
+node_modules/
+dist/
+build/
+
 # Environment variables
 .env
+.env.local
+.env.*.local
 
 # VS Code
 .vscode/
 
+# IDE
+.idea/
+
 # OS files
 .DS_Store
 Thumbs.db
+
+# Temporary files
+*.tmp

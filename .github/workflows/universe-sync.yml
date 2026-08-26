@@ -1,0 +1,119 @@
+name: Universe Sync
+
+on:
+  schedule:
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  universe-sync:
+    runs-on: ubuntu-latest
+    env:
+      MAIN_SUPABASE_URL: ${{ secrets.MAIN_SUPABASE_URL }}
+      MAIN_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAIN_SUPABASE_SERVICE_ROLE_KEY }}
+      PERSONAL_SUPABASE_URL: ${{ secrets.PERSONAL_SUPABASE_URL }}
+      PERSONAL_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.PERSONAL_SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - name: Checkout main repository
+        uses: actions/checkout@v4
+        with:
+          repository: TheCalmSpace/Pofit
+
+      - name: Checkout personal repository
+        uses: actions/checkout@v4
+        with:
+          repository: TheCalmSpace/pofit-personal
+          path: pofit-personal
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        working-directory: ./pofit-market-api
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install personal dependencies
+        working-directory: ./pofit-personal/backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run universe sync (Main Pofit)
+        working-directory: ./pofit-market-api
+        env:
+          SUPABASE_URL: ${{ secrets.MAIN_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAIN_SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python -c "
+          import asyncio
+          import logging
+          logging.basicConfig(level=logging.INFO)
+          from app.services.universe_sync_service import UniverseSyncService
+          service = UniverseSyncService()
+          report = service.run()
+          print(report.summary())
+          if report.final_status == 'FAILED':
+              raise SystemExit(1)
+          "
+
+      - name: Run personal sync (Main -> Personal)
+        working-directory: ./pofit-market-api
+        env:
+          SUPABASE_URL: ${{ secrets.MAIN_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAIN_SUPABASE_SERVICE_ROLE_KEY }}
+          PERSONAL_SUPABASE_URL: ${{ secrets.PERSONAL_SUPABASE_URL }}
+          PERSONAL_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.PERSONAL_SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python -c "
+          import logging
+          logging.basicConfig(level=logging.INFO)
+          from app.services.personal_sync_service import PersonalSyncService
+          service = PersonalSyncService()
+          report = service.run()
+          print(report.summary())
+          if report.final_status == 'FAILED':
+              raise SystemExit(1)
+          "
+
+      - name: Run score sync (Main -> Personal)
+        working-directory: ./pofit-market-api
+        env:
+          SUPABASE_URL: ${{ secrets.MAIN_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAIN_SUPABASE_SERVICE_ROLE_KEY }}
+          PERSONAL_SUPABASE_URL: ${{ secrets.PERSONAL_SUPABASE_URL }}
+          PERSONAL_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.PERSONAL_SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python -c "
+          import logging
+          logging.basicConfig(level=logging.INFO)
+          from app.services.score_sync_service import ScoreSyncService
+          service = ScoreSyncService()
+          report = service.run()
+          print(report.summary())
+          if report.final_status == 'FAILED':
+              raise SystemExit(1)
+          "
+
+      - name: Run data ingestion (Pofit Personal)
+        working-directory: ./pofit-personal/backend
+        env:
+          SUPABASE_URL: ${{ secrets.PERSONAL_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.PERSONAL_SUPABASE_SERVICE_ROLE_KEY }}
+          POFIT_MARKET_API_BASE_URL: ${{ secrets.POFIT_MARKET_API_BASE_URL }}
+        run: |
+          python -c "
+          import logging
+          logging.basicConfig(level=logging.INFO)
+          from app.services.auto_ingestion_service import AutoIngestionService
+          from app.adapters.pofit_market_api import PofitMarketApiAdapter
+          adapter = PofitMarketApiAdapter()
+          service = AutoIngestionService(adapter)
+          report = service.run()
+          print(report.summary())
+          if report.final_status == 'FAILED':
+              raise SystemExit(1)
+          "
