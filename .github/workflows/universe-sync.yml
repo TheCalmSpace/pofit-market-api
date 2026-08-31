@@ -17,12 +17,13 @@ jobs:
       - name: Checkout main repository
         uses: actions/checkout@v4
         with:
-          repository: TheCalmSpace/Pofit
+          repository: TheCalmSpace/pofit-market-api
 
       - name: Checkout personal repository
         uses: actions/checkout@v4
         with:
           repository: TheCalmSpace/pofit-personal
+          token: ${{ secrets.PERSONAL_REPO_TOKEN }}
           path: pofit-personal
 
       - name: Set up Python
