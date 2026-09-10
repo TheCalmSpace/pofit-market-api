@@ -1,0 +1,36 @@
+name: Score Sync
+
+on:
+  workflow_dispatch:
+
+jobs:
+  score-sync:
+    runs-on: ubuntu-latest
+    env:
+      MAIN_SUPABASE_URL: ${{ secrets.MAIN_SUPABASE_URL }}
+      MAIN_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAIN_SUPABASE_SERVICE_ROLE_KEY }}
+      SUPABASE_URL: ${{ secrets.MAIN_SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.MAIN_SUPABASE_SERVICE_ROLE_KEY }}
+      PERSONAL_SUPABASE_URL: ${{ secrets.PERSONAL_SUPABASE_URL }}
+      PERSONAL_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.PERSONAL_SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - name: Checkout main repository
+        uses: actions/checkout@v4
+        with:
+          repository: TheCalmSpace/pofit-market-api
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        working-directory: ./
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run score sync
+        working-directory: ./
+        run: |
+          python -c "from app.services.score_sync_service import ScoreSyncService; report = ScoreSyncService().run(); print(report)"
