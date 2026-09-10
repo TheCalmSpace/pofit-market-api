@@ -47,7 +47,7 @@ class DailyTopPicksService:
     def generate_country(
         self,
         country: str,
-        top_n: int = 15,
+        top_n: int = 50,
     ) -> List[Dict[str, Any]]:
 
         universe = self.stock_repo.list_all_by_country(country)
@@ -159,7 +159,7 @@ class DailyTopPicksService:
     def get_country(
         self,
         country: str,
-        limit: int = 15,
+        limit: int = 50,
     ) -> List[Dict[str, Any]]:
 
         return self.repository.get_country(

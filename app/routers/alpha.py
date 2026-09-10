@@ -1,8 +1,9 @@
 
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from app.dependencies import require_authenticated_user
 from app.repositories.alpha_portfolio_repository import AlphaPortfolioRepository
 from app.repositories.portfolio_performance_repository import PortfolioPerformanceRepository
 from app.repositories.alpha_history_repository import AlphaHistoryRepository
@@ -12,6 +13,7 @@ from app.core.supabase import supabase
 router = APIRouter(
     prefix="/alpha",
     tags=["Alpha"],
+    dependencies=[Depends(require_authenticated_user)],
 )
 
 

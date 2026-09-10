@@ -44,7 +44,7 @@ class PerformanceService:
 				"holdings_count": 0,
 			}
 
-			self.performance_repo.insert_daily_snapshot(market, snapshot)
+			self.performance_repo.insert_snapshot(snapshot)
 			return snapshot
 
 		holding_returns: List[float] = []
@@ -60,6 +60,15 @@ class PerformanceService:
 				bench_current = bench_q.current_price
 		except Exception:
 			bench_current = None
+
+		benchmark_history = None
+		if benchmark_symbol:
+			try:
+				benchmark_history = self.market.yahoo.get_historical_prices(
+					benchmark_symbol, period="max", interval="1d"
+				)
+			except Exception:
+				benchmark_history = None
 
 		for row in rows:
 			symbol = (row.get("symbol") or "").upper()
@@ -94,13 +103,9 @@ class PerformanceService:
 					# parse entry date
 					entry_date = datetime.fromisoformat(entry_date_raw.replace("Z", "+00:00")).date()
 
-					history = self.market.yahoo.get_historical_prices(
-						benchmark_symbol, period="max", interval="1d"
-					)
-
 					# find last available price on or before entry_date
 					bench_entry_price = None
-					for item in reversed(history.prices):
+					for item in reversed(benchmark_history.prices if benchmark_history else []):
 						if item.date <= entry_date:
 							bench_entry_price = item.close
 							break
@@ -127,7 +132,7 @@ class PerformanceService:
 			"holdings_count": len(holding_returns),
 		}
 
-		self.performance_repo.insert_daily_snapshot(market, snapshot)
+		self.performance_repo.insert_snapshot(snapshot)
 
 		return snapshot
 

@@ -1,5 +1,5 @@
 import math
-import traceback
+import time
 from datetime import date
 from typing import Any, Dict, List, Optional, Sequence, Set
 
@@ -35,6 +35,8 @@ class MarketDataUnavailableError(MarketDataError):
 
 
 class YahooService:
+    _MAX_TRANSIENT_RETRIES = 2
+    _RETRY_DELAY_SECONDS = 0.1
     _VALID_PERIODS = {
         "1d",
         "5d",
@@ -211,10 +213,12 @@ class YahooService:
         ticker = yf.Ticker(normalized_symbol)
 
         try:
-            history = ticker.history(
-                period=normalized_period,
-                interval=normalized_interval,
-                auto_adjust=False,
+            history = self._with_transient_retries(
+                lambda: ticker.history(
+                    period=normalized_period,
+                    interval=normalized_interval,
+                    auto_adjust=False,
+                )
             )
         except Exception as exc:
             if self._looks_like_missing_symbol_error(exc):
@@ -529,7 +533,7 @@ class YahooService:
 
     def _get_info(self, ticker: Any, symbol: str) -> Dict[str, Any]:
         try:
-            info = ticker.info
+            info = self._with_transient_retries(lambda: ticker.info)
             print("=" * 80)
             print("SYMBOL:", symbol)
             print("SECTOR:", info.get("sector"))
@@ -542,12 +546,10 @@ class YahooService:
 
             print("=" * 80)
             print(f"ERROR FETCHING SYMBOL: {symbol}")
-            traceback.print_exception(type(exc), exc, exc.__traceback__)
             print("=" * 80)
 
             raise MarketDataUnavailableError(
-                f"Unable to fetch quote data for '{symbol}'. "
-                f"{type(exc).__name__}: {exc}"
+                f"Unable to fetch quote data for '{symbol}'."
             ) from exc
 
         if not isinstance(info, dict):
@@ -563,7 +565,9 @@ class YahooService:
         raise_on_error: bool = False,
     ) -> Any:
         try:
-            return getattr(ticker, attribute_name)
+            return self._with_transient_retries(
+                lambda: getattr(ticker, attribute_name)
+            )
         except Exception as exc:
             if raise_on_error:
                 statement_name = attribute_name.replace("_", " ")
@@ -625,6 +629,45 @@ class YahooService:
                     return value
 
         return None
+
+    def _with_transient_retries(self, operation: Any) -> Any:
+        for attempt in range(self._MAX_TRANSIENT_RETRIES + 1):
+            try:
+                return operation()
+            except Exception as exc:
+                if (
+                    attempt >= self._MAX_TRANSIENT_RETRIES
+                    or not self._is_transient_provider_error(exc)
+                ):
+                    raise
+                time.sleep(self._RETRY_DELAY_SECONDS * (attempt + 1))
+
+        raise RuntimeError("Retry operation did not return")
+
+    @staticmethod
+    def _is_transient_provider_error(exc: Exception) -> bool:
+        message = str(exc).lower()
+        markers = (
+            "timeout",
+            "timed out",
+            "connection",
+            "temporarily unavailable",
+            "rate limit",
+            "too many requests",
+            "429",
+            "502",
+            "503",
+            "504",
+            "reset by peer",
+            "getaddrinfo failed",
+            "temporary failure in name resolution",
+            "temporary dns",
+            "name or service not known",
+            "nodename nor servname",
+            "connection reset",
+            "connect failed",
+        )
+        return any(marker in message for marker in markers)
 
     def _get_statement_years(self, *statements: Any) -> List[int]:
         years: Set[int] = set()

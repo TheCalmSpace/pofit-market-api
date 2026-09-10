@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from app.models.metrics import (
     FinancialStrengthMetrics,
@@ -7,22 +7,28 @@ from app.models.metrics import (
     QualityMetrics,
     ValuationMetrics,
 )
+from app.dependencies import require_authenticated_user
+from app.repositories.stock_repository import StockRepository
 from app.services.metrics_service import MetricsService
 from app.services.yahoo_service import (
     MarketDataUnavailableError,
     SymbolNotFoundError,
     YahooService,
 )
+from app.utils.symbol import resolve_yahoo_symbol
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_authenticated_user)])
 
 yahoo = YahooService()
+stock_repo = StockRepository()
 
 
 @router.get("/metrics/{symbol}")
 async def get_metrics(symbol: str):
+    resolved_symbol = _resolve_symbol(symbol)
+
     try:
-        financials = yahoo.get_financials(symbol)
+        financials = yahoo.get_financials(resolved_symbol)
     except SymbolNotFoundError:
         return MetricsResponse(
             symbol=symbol.upper(),
@@ -45,7 +51,7 @@ async def get_metrics(symbol: str):
         )
 
     try:
-        history = yahoo.get_financial_history(symbol)
+        history = yahoo.get_financial_history(resolved_symbol)
     except SymbolNotFoundError:
         return MetricsResponse(
             symbol=symbol.upper(),
@@ -99,3 +105,12 @@ async def get_metrics(symbol: str):
             financial_strength=FinancialStrengthMetrics(),
             valuation=ValuationMetrics(),
         )
+
+
+def _resolve_symbol(symbol: str) -> str:
+    try:
+        stock = stock_repo.get_by_symbol(symbol.upper())
+    except Exception:
+        stock = None
+    exchange = stock.get("exchange") if stock else None
+    return resolve_yahoo_symbol(symbol.upper(), exchange)

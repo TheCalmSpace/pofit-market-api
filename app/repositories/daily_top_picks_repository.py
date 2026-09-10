@@ -29,7 +29,7 @@ class DailyTopPicksRepository:
     def get_country(
         self,
         country: str,
-        limit: int = 15,
+        limit: int = 50,
     ) -> List[Dict[str, Any]]:
 
         result = (

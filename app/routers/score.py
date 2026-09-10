@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
+from app.dependencies import require_authenticated_user
 from app.models.score import ScoreResponse
 from app.repositories.stock_data_repository import StockDataRepository
 from app.services.data_quality import DataQualityAssessor
@@ -10,7 +11,7 @@ from app.services.yahoo_service import (
     SymbolNotFoundError,
 )
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_authenticated_user)])
 
 market_service = MarketDataService()
 stock_data_repo = StockDataRepository()

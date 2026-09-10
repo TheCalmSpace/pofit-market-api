@@ -1,11 +1,16 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
+from app.dependencies import require_authenticated_user
 from app.models import ErrorResponse, FinancialsResponse
 from app.repositories.stock_repository import StockRepository
 from app.services import MarketDataUnavailableError, SymbolNotFoundError, YahooService
 from app.utils.symbol import resolve_yahoo_symbol
 
-router = APIRouter(prefix="/financials", tags=["Financials"])
+router = APIRouter(
+    prefix="/financials",
+    tags=["Financials"],
+    dependencies=[Depends(require_authenticated_user)],
+)
 yahoo_service = YahooService()
 stock_repo = StockRepository()
 

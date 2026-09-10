@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from app.dependencies import require_authenticated_user
 from app.models import ErrorResponse, HistoricalResponse
 from app.repositories.stock_repository import StockRepository
 from app.services import (
@@ -10,7 +11,11 @@ from app.services import (
 )
 from app.utils.symbol import resolve_yahoo_symbol
 
-router = APIRouter(prefix="/historical", tags=["Historical"])
+router = APIRouter(
+    prefix="/historical",
+    tags=["Historical"],
+    dependencies=[Depends(require_authenticated_user)],
+)
 yahoo_service = YahooService()
 stock_repo = StockRepository()
 

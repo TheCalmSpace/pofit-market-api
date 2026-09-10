@@ -27,6 +27,14 @@ class AlphaPortfolioRepository:
         if rows:
             supabase.table(self.TABLE).insert(rows).execute()
 
+    def insert_one(self, stock: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        result = supabase.table(self.TABLE).insert(stock).execute()
+
+        if not result.data:
+            return None
+
+        return result.data[0]
+
     def insert(self, stock: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         result = supabase.table(self.TABLE).insert(stock).execute()
 

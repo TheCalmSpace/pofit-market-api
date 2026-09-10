@@ -1,11 +1,13 @@
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from typing import Any, Dict, List, Optional
 
+from app.dependencies import require_authenticated_user
 from app.repositories.stock_repository import StockRepository
 
 router = APIRouter(
     prefix="/radar",
     tags=["Radar"],
+    dependencies=[Depends(require_authenticated_user)],
 )
 
 stock_repo = StockRepository()

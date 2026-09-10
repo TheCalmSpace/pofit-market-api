@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -9,6 +10,17 @@ from app.services.data_quality import DataQualityAssessor
 from app.utils.symbol import resolve_yahoo_symbol
 
 client = TestClient(app)
+AUTH_HEADERS = {"Authorization": "Bearer test-token"}
+
+
+@pytest.fixture(autouse=True)
+def mock_supabase_auth(monkeypatch):
+    monkeypatch.setattr(
+        "app.dependencies.supabase.auth.get_user",
+        lambda token: SimpleNamespace(
+            user=SimpleNamespace(id="test-user", email="test@example.com")
+        ),
+    )
 
 
 class TestSymbolResolution:
@@ -73,7 +85,7 @@ class TestMetricsCrashFix:
         mock_yahoo.get_financials.side_effect = Exception("SymbolNotFoundError")
         mock_yahoo_cls.return_value = mock_yahoo
 
-        response = client.get("/metrics/RELIANCE")
+        response = client.get("/metrics/RELIANCE", headers=AUTH_HEADERS)
         assert response.status_code == 200
         data = response.json()
         assert data["data_status"] == "insufficient_data"
@@ -85,7 +97,7 @@ class TestMetricsCrashFix:
         mock_yahoo.get_financial_history.return_value = MagicMock(data_status="unavailable")
         mock_yahoo_cls.return_value = mock_yahoo
 
-        response = client.get("/metrics/RELIANCE")
+        response = client.get("/metrics/RELIANCE", headers=AUTH_HEADERS)
         assert response.status_code == 200
         data = response.json()
         assert data["data_status"] == "insufficient_data"
@@ -135,7 +147,7 @@ class TestScoreSafety:
         }
         mock_market.get_stock.return_value = mock_repo.get.return_value
 
-        response = client.get("/score/RELIANCE")
+        response = client.get("/score/RELIANCE", headers=AUTH_HEADERS)
         assert response.status_code == 200
         data = response.json()
         assert data["data_status"] == "insufficient_data"
@@ -185,7 +197,7 @@ class TestScoreSafety:
         }
         mock_market.get_stock.return_value = mock_repo.get.return_value
 
-        response = client.get("/score/INFY")
+        response = client.get("/score/INFY", headers=AUTH_HEADERS)
         assert response.status_code == 200
         data = response.json()
         assert data["data_status"] == "available"
@@ -200,5 +212,5 @@ class TestBankHandling:
         mock_yahoo.get_financials.side_effect = SymbolNotFoundError("HDFCBANK")
         mock_repo.get_by_symbol.return_value = None
 
-        response = client.get("/financials/HDFCBANK")
+        response = client.get("/financials/HDFCBANK", headers=AUTH_HEADERS)
         assert response.status_code == 404

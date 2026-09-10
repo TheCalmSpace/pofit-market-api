@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
+from app.dependencies import require_authenticated_user
 from app.models import ErrorResponse, QuoteResponse
 
 from app.services.market_data_service import MarketDataService
@@ -11,6 +12,7 @@ from app.services.yahoo_service import (
 router = APIRouter(
     prefix="/quote",
     tags=["Quote"],
+    dependencies=[Depends(require_authenticated_user)],
 )
 
 market_service = MarketDataService()

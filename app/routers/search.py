@@ -1,12 +1,14 @@
 from typing import Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
+from app.dependencies import require_authenticated_user
 from app.repositories.stock_repository import StockRepository
 
 router = APIRouter(
     prefix="/search",
     tags=["Search"],
+    dependencies=[Depends(require_authenticated_user)],
 )
 
 stock_repo = StockRepository()

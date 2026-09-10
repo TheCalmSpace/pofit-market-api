@@ -5,6 +5,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.services.daily_top_picks_service import DailyTopPicksService
 from app.services.alpha_portfolio_service import AlphaPortfolioService
+from app.services.performance_service import PerformanceService
 
 
 scheduler = BackgroundScheduler(
@@ -26,10 +27,12 @@ def generate_india():
     # Reconcile Alpha from the already-generated eligible Daily Top Picks.
     # Performance calculation is intentionally not part of the Alpha pipeline.
     alpha_service = AlphaPortfolioService()
+    performance_service = PerformanceService()
 
     try:
         count = alpha_service.reconcile_market("IN")
         print(f"Alpha portfolio updated; holdings={count} (IN)")
+        performance_service.snapshot_market("IN")
     except Exception:
         logger.exception("Alpha portfolio update failed for IN")
 
@@ -46,10 +49,12 @@ def generate_usa():
     # Reconcile Alpha from the already-generated eligible Daily Top Picks.
     # Performance calculation is intentionally not part of the Alpha pipeline.
     alpha_service = AlphaPortfolioService()
+    performance_service = PerformanceService()
 
     try:
         count = alpha_service.reconcile_market("US")
         print(f"Alpha portfolio updated; holdings={count} (US)")
+        performance_service.snapshot_market("US")
     except Exception:
         logger.exception("Alpha portfolio update failed for US")
 

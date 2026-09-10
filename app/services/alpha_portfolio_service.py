@@ -1,9 +1,11 @@
+import logging
 from datetime import datetime, timezone
 from typing import Dict, List
 
 from app.repositories.daily_top_picks_repository import DailyTopPicksRepository
 from app.repositories.alpha_portfolio_repository import AlphaPortfolioRepository
 from app.repositories.alpha_history_repository import AlphaHistoryRepository
+from app.services.market_data_service import MarketDataService
 
 
 class AlphaPortfolioService:
@@ -24,10 +26,22 @@ class AlphaPortfolioService:
     scoring/eligibility rules.
     """
 
+    ALPHA_SIZE = 15
+
     def __init__(self):
         self.daily_repo = DailyTopPicksRepository()
         self.alpha_repo = AlphaPortfolioRepository()
         self.history_repo = AlphaHistoryRepository()
+        self.market = MarketDataService()
+        self.logger = logging.getLogger(__name__)
+
+    def _get_current_price(self, symbol: str) -> float:
+        payload = self.market.get_stock(symbol)
+        quote = payload.get("quote_json") or {}
+        current_price = quote.get("current_price")
+        if current_price is None or float(current_price) <= 0:
+            raise ValueError(f"No valid current price for {symbol}")
+        return float(current_price)
 
     def reconcile_all(self) -> Dict[str, int]:
         """Reconcile both supported markets and return resulting sizes.
@@ -59,65 +73,86 @@ class AlphaPortfolioService:
         current_rows = self.alpha_repo.get_all(market)
         current_symbols = [r.get("symbol", "").upper() for r in current_rows]
 
-        picks = self.daily_repo.get_country(country=market, limit=15)
+        picks = self.daily_repo.get_country(country=market, limit=self.ALPHA_SIZE)
         picks_symbols = [r.get("symbol", "").upper() for r in picks]
 
         to_add = [s for s in picks_symbols if s not in current_symbols]
         to_remove = [s for s in current_symbols if s not in picks_symbols]
 
-        # Record REMOVE events
+        current_by_symbol = {
+            (row.get("symbol") or "").upper(): row for row in current_rows
+        }
+        picks_by_symbol = {
+            (pick.get("symbol") or "").upper(): pick for pick in picks
+        }
+        timestamp = datetime.now(timezone.utc).isoformat()
+        new_rows: Dict[str, dict] = {}
+
+        for pick in picks:
+            symbol = (pick.get("symbol") or "").upper()
+            existing = current_by_symbol.get(symbol)
+            entry_price = existing.get("entry_price") if existing else None
+            entry_date = existing.get("entry_date") if existing else None
+
+            try:
+                if entry_price is None or float(entry_price) <= 0:
+                    raise ValueError("entry price is missing or non-positive")
+                entry_price = float(entry_price)
+            except (TypeError, ValueError):
+                try:
+                    entry_price = self._get_current_price(symbol)
+                except Exception as exc:
+                    self.logger.warning(
+                        "Skipping Alpha holding %s without a valid entry price: %s",
+                        symbol,
+                        exc,
+                    )
+                    continue
+
+            if entry_date is None:
+                entry_date = timestamp
+
+            new_rows[symbol] = {
+                "market": market,
+                "symbol": symbol,
+                "company_name": pick.get("company_name"),
+                "exchange": pick.get("exchange"),
+                "score": pick.get("overall_score"),
+                "rank": pick.get("rank"),
+                "entry_price": entry_price,
+                "entry_date": entry_date,
+            }
+
+        for symbol in to_add:
+            if symbol not in new_rows:
+                continue
+            row = new_rows[symbol]
+            inserted = self.alpha_repo.insert_one(row)
+            if inserted is None:
+                raise RuntimeError(f"Failed to insert Alpha holding {symbol}")
+
+            pick = picks_by_symbol[symbol]
+            self.history_repo.insert_event(
+                market=market,
+                symbol=symbol,
+                action=self.history_repo.ACTION_ADD,
+                reason="Added from Daily Top Picks",
+                price=row["entry_price"],
+                score=pick.get("overall_score"),
+                company_name=pick.get("company_name"),
+            )
+
         for symbol in to_remove:
-            # find metadata from current portfolio
-            row = next((r for r in current_rows if (r.get("symbol") or "").upper() == symbol), None)
-
-            company_name = row.get("company_name") if row else None
-            score = row.get("score") if row else None
-
+            row = current_by_symbol[symbol]
+            self.alpha_repo.delete(symbol, market=market)
             self.history_repo.insert_event(
                 market=market,
                 symbol=symbol,
                 action=self.history_repo.ACTION_REMOVE,
                 reason="Removed from Daily Top Picks",
                 price=None,
-                score=score,
-                company_name=company_name,
+                score=row.get("score"),
+                company_name=row.get("company_name"),
             )
-
-        # Record ADD events
-        for symbol in to_add:
-            pick = next((r for r in picks if (r.get("symbol") or "").upper() == symbol), None)
-
-            company_name = pick.get("company_name") if pick else None
-            score = pick.get("overall_score") if pick else None
-
-            self.history_repo.insert_event(
-                market=market,
-                symbol=symbol,
-                action=self.history_repo.ACTION_ADD,
-                reason="Added from Daily Top Picks",
-                price=None,
-                score=score,
-                company_name=company_name,
-            )
-
-        # Build new portfolio rows from picks and replace the table
-        new_rows: List[dict] = []
-        timestamp = datetime.now(timezone.utc).isoformat()
-
-        for pick in picks:
-            new_rows.append(
-                {
-                    "market": market,
-                    "symbol": (pick.get("symbol") or "").upper(),
-                    "company_name": pick.get("company_name"),
-                    "exchange": pick.get("exchange"),
-                    "score": pick.get("overall_score"),
-                    "rank": pick.get("rank"),
-                    "entry_date": timestamp,
-                }
-            )
-
-        # Replace persisted portfolio
-        self.alpha_repo.replace_all(market, new_rows)
 
         return len(new_rows)
