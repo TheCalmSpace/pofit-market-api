@@ -63,7 +63,7 @@ class DailyTopPicksService:
             symbol = stock["symbol"]
 
             try:
-                payload = self.market.get_stock(symbol)
+                payload = self.market.get_stock_for_top_picks(symbol)
 
                 print(f"{symbol} -> payload keys: {list(payload.keys())}")
 

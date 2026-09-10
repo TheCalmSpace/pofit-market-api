@@ -1,5 +1,7 @@
 from typing import Any, Dict, Optional, List
 
+from postgrest import ReturnMethod
+
 from app.core.supabase import supabase
 
 
@@ -20,19 +22,30 @@ class StockDataRepository:
 
         return result.data[0]
 
-    def save(self, symbol: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def get_for_top_picks(self, symbol: str) -> Optional[Dict[str, Any]]:
+        result = (
+            supabase.table("stock_data")
+            .select("symbol,eligibility_json,score_json,cache_status,updated_at")
+            .eq("symbol", symbol.upper())
+            .limit(1)
+            .execute()
+        )
+
+        if not result.data:
+            return None
+
+        return result.data[0]
+
+    def save(self, symbol: str, payload: Dict[str, Any]) -> None:
         data = {
             "symbol": symbol.upper(),
             **payload,
         }
 
-        result = (
-            supabase.table("stock_data")
-            .upsert(data)
-            .execute()
-        )
-
-        return result.data[0]
+        supabase.table("stock_data").upsert(
+            data,
+            returning=ReturnMethod.minimal,
+        ).execute()
 
     def list_all_metrics(self) -> List[Dict[str, Any]]:
         """Return cached metrics for the full stock universe."""

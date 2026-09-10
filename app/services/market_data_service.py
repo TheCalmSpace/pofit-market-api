@@ -47,14 +47,34 @@ class MarketDataService:
 
         return self.refresh_stock(symbol)
 
+    def get_stock_for_top_picks(
+        self,
+        symbol: str,
+    ) -> Dict[str, Any]:
+        symbol = symbol.upper()
+
+        stock = self.stock_repo.get_by_symbol_for_top_picks(symbol)
+
+        if stock is None:
+            raise SymbolNotFoundError(symbol)
+
+        cached = self.stock_data_repo.get_for_top_picks(symbol)
+
+        if self._is_cache_valid(cached):
+            return cached
+
+        return self.refresh_stock(symbol, stock=stock)
+
     def refresh_stock(
         self,
         symbol: str,
+        stock: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
 
         symbol = symbol.upper()
 
-        stock = self.stock_repo.get_by_symbol(symbol)
+        if stock is None:
+            stock = self.stock_repo.get_by_symbol(symbol)
 
         if stock is None:
             raise SymbolNotFoundError(symbol)

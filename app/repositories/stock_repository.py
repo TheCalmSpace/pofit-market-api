@@ -60,6 +60,24 @@ class StockRepository:
 
         return result.data[0]
 
+    def get_by_symbol_for_top_picks(
+        self,
+        symbol: str,
+    ) -> Optional[Dict[str, Any]]:
+        result = (
+            supabase.table("stocks")
+            .select("symbol,exchange")
+            .eq("symbol", symbol.upper())
+            .eq("is_active", True)
+            .limit(1)
+            .execute()
+        )
+
+        if not result.data:
+            return None
+
+        return result.data[0]
+
     def list_all_active(self) -> List[Dict[str, Any]]:
         """Return the full active stock universe for benchmarking."""
         result = (
