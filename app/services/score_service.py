@@ -10,6 +10,8 @@ class ScoreService:
     Converts financial metrics into a simple POFIT MVP score.
     """
 
+    MODEL_VERSION = "v1"
+
     def build_score(self, metrics: MetricsResponse) -> ScoreResponse:
         growth_score = self._growth_score(metrics)
         quality_score = self._quality_score(metrics)
@@ -28,6 +30,7 @@ class ScoreService:
 
         return ScoreResponse(
             symbol=metrics.symbol,
+            model_version=self.MODEL_VERSION,
             overall_score=overall_score,
             grade=self._grade(overall_score),
             growth_score=round(growth_score, 2),

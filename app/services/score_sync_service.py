@@ -9,6 +9,7 @@ from supabase import Client, create_client
 
 from app.core.supabase import supabase as main_supabase
 from app.services.data_quality import DataQualityAssessor
+from app.services.score_service import ScoreService
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +133,7 @@ class ScoreSyncService:
             "calculated_at": calculated_at,
             "total_score": score["overall_score"],
             "grade": score["grade"],
-            "model_version": score.get("model_version"),
+            "model_version": score.get("model_version") or ScoreService.MODEL_VERSION,
             "data_as_of": data_as_of,
             "data_quality_status": data_quality_status,
             "growth_score": score["growth_score"],

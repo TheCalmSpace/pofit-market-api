@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from app.services.score_sync_service import ScoreSyncService
+from app.services.score_service import ScoreService
 
 
 def _cached_score(score=None, updated_at=None):
@@ -72,6 +73,7 @@ class TestScoreSyncService:
         assert payload["stock_id"] == "personal-stock-id"
         assert payload["total_score"] == 81.5
         assert payload["grade"] == "A"
+        assert payload["model_version"] == "v1"
         assert payload["growth_score"] == 80.0
         assert payload["quality_score"] == 82.0
         assert payload["valuation_score"] == 84.0
@@ -81,6 +83,24 @@ class TestScoreSyncService:
         assert personal.table.return_value.upsert.call_args.kwargs["on_conflict"] == (
             "stock_id,calculated_at"
         )
+
+    def test_missing_model_version_uses_main_score_model_version(self):
+        main = MagicMock()
+        personal = MagicMock()
+        main.table.return_value.select.return_value.execute.return_value.data = [
+            _cached_score(_score(model_version=None))
+        ]
+        personal.table.return_value.select.return_value.execute.return_value.data = [
+            {"id": "personal-stock-id", "symbol": "ABC", "exchange": "NSE"}
+        ]
+        personal.table.return_value.upsert.return_value.execute.return_value.data = []
+        service = _service(main, personal)
+
+        report = service.run()
+
+        assert report.synced == 1
+        payload = personal.table.return_value.upsert.call_args.args[0]
+        assert payload["model_version"] == ScoreService.MODEL_VERSION
 
     def test_missing_score_json_is_skipped(self):
         main = MagicMock()
