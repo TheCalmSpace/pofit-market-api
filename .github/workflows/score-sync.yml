@@ -33,4 +33,4 @@ jobs:
       - name: Run score sync
         working-directory: ./
         run: |
-          python -c "from app.services.score_sync_service import ScoreSyncService; report = ScoreSyncService().run(); print(report)"
+          python -c "from app.services.score_sync_service import ScoreSyncService; report = ScoreSyncService().run(); print(report); raise SystemExit(0 if report.final_status == 'SUCCESS' else 1)"
