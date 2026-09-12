@@ -18,7 +18,7 @@ from app.routers import (
     subscription,
 )
 
-from app.scheduler import start_scheduler
+from app.scheduler import shutdown_scheduler, start_scheduler
 
 
 API_VERSION = "1.0.0"
@@ -27,7 +27,10 @@ API_VERSION = "1.0.0"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     start_scheduler()
-    yield
+    try:
+        yield
+    finally:
+        shutdown_scheduler()
 
 
 def create_app() -> FastAPI:

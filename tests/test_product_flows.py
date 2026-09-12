@@ -295,8 +295,24 @@ class TestAlphaPortfolio:
 
         assert count == 1
         stored_row = service.alpha_repo.insert_one.call_args.args[0]
+        assert set(stored_row) == {
+            "market",
+            "symbol",
+            "company_name",
+            "exchange",
+            "overall_score",
+            "entry_price",
+            "entry_date",
+        }
+        assert stored_row["market"] == "IN"
+        assert stored_row["symbol"] == "ABC"
+        assert stored_row["company_name"] == "ABC Co"
+        assert stored_row["exchange"] == "NSE"
+        assert stored_row["overall_score"] == 90
         assert stored_row["entry_price"] == 123.45
         assert stored_row["entry_date"]
+        assert "score" not in stored_row
+        assert "rank" not in stored_row
         service.history_repo.insert_event.assert_called_once_with(
             market="IN",
             symbol="ABC",
@@ -343,7 +359,7 @@ class TestAlphaPortfolio:
                 "symbol": "ABC",
                 "entry_price": 123.45,
                 "entry_date": "2026-01-01T00:00:00+00:00",
-                "score": 90,
+                "overall_score": 90,
                 "company_name": "ABC Co",
             }
         ]

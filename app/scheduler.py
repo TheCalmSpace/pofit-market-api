@@ -24,18 +24,6 @@ def generate_india():
     result = service.generate_country("IN")
     print(f"Generated {len(result)} India Top Picks")
 
-    # Reconcile Alpha from the already-generated eligible Daily Top Picks.
-    # Performance calculation is intentionally not part of the Alpha pipeline.
-    alpha_service = AlphaPortfolioService()
-    performance_service = PerformanceService()
-
-    try:
-        count = alpha_service.reconcile_market("IN")
-        print(f"Alpha portfolio updated; holdings={count} (IN)")
-        performance_service.snapshot_market("IN")
-    except Exception:
-        logger.exception("Alpha portfolio update failed for IN")
-
 def generate_usa():
     print("=" * 80)
     print("POFIT Scheduler")
@@ -46,8 +34,30 @@ def generate_usa():
     result = service.generate_country("US")
     print(f"Generated {len(result)} USA Top Picks")
 
-    # Reconcile Alpha from the already-generated eligible Daily Top Picks.
-    # Performance calculation is intentionally not part of the Alpha pipeline.
+
+def reconcile_india():
+    print("=" * 80)
+    print("POFIT Scheduler")
+    print("Reconciling India Alpha Portfolio...")
+    print("=" * 80)
+
+    alpha_service = AlphaPortfolioService()
+    performance_service = PerformanceService()
+
+    try:
+        count = alpha_service.reconcile_market("IN")
+        print(f"Alpha portfolio updated; holdings={count} (IN)")
+        performance_service.snapshot_market("IN")
+    except Exception:
+        logger.exception("Alpha portfolio update failed for IN")
+
+
+def reconcile_usa():
+    print("=" * 80)
+    print("POFIT Scheduler")
+    print("Reconciling USA Alpha Portfolio...")
+    print("=" * 80)
+
     alpha_service = AlphaPortfolioService()
     performance_service = PerformanceService()
 
@@ -58,7 +68,10 @@ def generate_usa():
     except Exception:
         logger.exception("Alpha portfolio update failed for US")
 
+
 def start_scheduler():
+    if scheduler.running:
+        return scheduler
 
     scheduler.add_job(
         generate_india,
@@ -67,6 +80,19 @@ def start_scheduler():
         minute=0,
         id="india_top_picks",
         replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+    )
+
+    scheduler.add_job(
+        reconcile_india,
+        trigger="cron",
+        hour=8,
+        minute=30,
+        id="india_alpha_reconciliation",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
     )
 
     scheduler.add_job(
@@ -76,12 +102,34 @@ def start_scheduler():
         minute=30,
         id="usa_top_picks",
         replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+    )
+
+    scheduler.add_job(
+        reconcile_usa,
+        trigger="cron",
+        hour=10,
+        minute=0,
+        id="usa_alpha_reconciliation",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
     )
 
     scheduler.start()
 
     print("=" * 80)
     print("POFIT Scheduler Started")
-    print("India  : 08:00 IST")
-    print("USA    : 09:30 IST")
+    print("India Top Picks       : 08:00 IST")
+    print("India Alpha Reconcile : 08:30 IST")
+    print("USA Top Picks         : 09:30 IST")
+    print("USA Alpha Reconcile   : 10:00 IST")
     print("=" * 80)
+
+    return scheduler
+
+
+def shutdown_scheduler():
+    if scheduler.running:
+        scheduler.shutdown(wait=False)

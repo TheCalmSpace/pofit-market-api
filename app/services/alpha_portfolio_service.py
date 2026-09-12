@@ -117,8 +117,7 @@ class AlphaPortfolioService:
                 "symbol": symbol,
                 "company_name": pick.get("company_name"),
                 "exchange": pick.get("exchange"),
-                "score": pick.get("overall_score"),
-                "rank": pick.get("rank"),
+                "overall_score": pick.get("overall_score"),
                 "entry_price": entry_price,
                 "entry_date": entry_date,
             }
@@ -151,7 +150,7 @@ class AlphaPortfolioService:
                 action=self.history_repo.ACTION_REMOVE,
                 reason="Removed from Daily Top Picks",
                 price=None,
-                score=row.get("score"),
+                score=row.get("overall_score"),
                 company_name=row.get("company_name"),
             )
 
