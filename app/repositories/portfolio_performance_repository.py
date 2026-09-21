@@ -1,102 +1,64 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from app.core.supabase import supabase
 
 
 class PortfolioPerformanceRepository:
-    """Repository for `portfolio_performance` table.
+	TABLE = "portfolio_performance"
 
-    Provides simple CRUD-like reads for performance snapshots. This
-    repository follows the project's existing Supabase access pattern
-    and intentionally contains no business logic.
-    """
+	def insert_snapshot(self, snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+		market = (snapshot.get("market") or "").upper()
+		data = {**snapshot, "market": market}
+		if not data.get("as_of"):
+			data["as_of"] = datetime.now(timezone.utc).isoformat()
+		result = supabase.table(self.TABLE).insert(data).execute()
+		if not result.data:
+			return None
+		return result.data[0]
 
-    TABLE = "portfolio_performance"
+	def get_latest(self, market: str) -> Optional[Dict[str, Any]]:
+		result = (
+			supabase.table(self.TABLE)
+			.select("*")
+			.eq("market", (market or "").upper())
+			.order("as_of", desc=True)
+			.limit(1)
+			.execute()
+		)
+		if not result.data:
+			return None
+		return result.data[0]
 
-    def insert_snapshot(self, snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Insert a daily performance snapshot.
+	def get_history(self, market: str, limit: int = 365) -> List[Dict[str, Any]]:
+		result = (
+			supabase.table(self.TABLE)
+			.select("*")
+			.eq("market", (market or "").upper())
+			.order("as_of", desc=True)
+			.limit(limit)
+			.execute()
+		)
+		return result.data or []
 
-        The `snapshot` dictionary should include at least a `market`
-        key. The repository normalizes `market` to upper-case and
-        ensures an `as_of` timestamp exists (UTC ISO). Returns the
-        inserted row on success or `None` on failure.
-        """
-
-        market = (snapshot.get("market") or "").upper()
-
-        data = {**snapshot, "market": market}
-
-        if not data.get("as_of"):
-            data["as_of"] = datetime.now(timezone.utc).isoformat()
-
-        result = supabase.table(self.TABLE).insert(data).execute()
-
-        if not result.data:
-            return None
-
-        return result.data[0]
-
-    def get_latest(self, market: str) -> Optional[Dict[str, Any]]:
-        """Return the latest snapshot for `market` (newest `as_of`)."""
-
-        result = (
-            supabase.table(self.TABLE)
-            .select("*")
-            .eq("market", (market or "").upper())
-            .order("as_of", desc=True)
-            .limit(1)
-            .execute()
-        )
-
-        if not result.data:
-            return None
-
-        return result.data[0]
-
-    def get_history(self, market: str, limit: int = 365) -> List[Dict[str, Any]]:
-        """Return recent snapshots for `market`, newest first.
-
-        Results are ordered by `as_of` descending and limited by
-        `limit`.
-        """
-
-        result = (
-            supabase.table(self.TABLE)
-            .select("*")
-            .eq("market", (market or "").upper())
-            .order("as_of", desc=True)
-            .limit(limit)
-            .execute()
-        )
-
-        return result.data or []
-
-    def get_by_date(self, market: str, date: Any) -> Optional[Dict[str, Any]]:
-        """Return a single snapshot for `market` matching `date`.
-
-        `date` may be a `str`, `date` or `datetime`. The repository
-        compares using the ISO string representation.
-        """
-
-        date_iso = None
-
-        if hasattr(date, "isoformat"):
-            date_iso = date.isoformat()
-        else:
-            date_iso = str(date)
-
-        result = (
-            supabase.table(self.TABLE)
-            .select("*")
-            .eq("market", (market or "").upper())
-            .eq("as_of", date_iso)
-            .limit(1)
-            .execute()
-        )
-
-        if not result.data:
-            return None
-
-        return result.data[0]
-
+	def get_for_period(
+		self,
+		market: str,
+		columns: List[str],
+		date_start: Optional[date] = None,
+		date_end: Optional[date] = None,
+	) -> List[Dict[str, Any]]:
+		market = (market or "").upper()
+		query = (
+			supabase.table(self.TABLE)
+			.select(",".join(columns))
+			.eq("market", market)
+		)
+		if date_start is not None:
+			date_start_iso = date_start.isoformat() if hasattr(date_start, "isoformat") else str(date_start)
+			query = query.gte("as_of", date_start_iso)
+		if date_end is not None:
+			date_end_iso = date_end.isoformat() if hasattr(date_end, "isoformat") else str(date_end)
+			query = query.lte("as_of", date_end_iso)
+		result = query.order("as_of", desc=False).execute()
+		return result.data or []

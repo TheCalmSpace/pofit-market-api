@@ -10,7 +10,20 @@ class HealthResponse(BaseModel):
 
 
 class ErrorResponse(BaseModel):
-    detail: str
+	detail: str
+
+
+class AlphaPerformanceReportResponse(BaseModel):
+	market: str
+	period: str
+	status: str
+	benchmark: Optional[str] = None
+	portfolio_return: Optional[float] = None
+	benchmark_return: Optional[float] = None
+	excess_return: Optional[float] = None
+	as_of: str
+	holdings_count: int
+	reason: Optional[str] = None
 
 
 class QuoteResponse(BaseModel):
