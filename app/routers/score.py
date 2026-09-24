@@ -23,7 +23,14 @@ stock_data_repo = StockDataRepository()
 )
 def get_score(symbol: str):
     try:
-        stock = market_service.get_stock(symbol)
+        cached = stock_data_repo.get_score_data(symbol)
+
+        if not cached or not market_service._is_cache_valid(cached):
+            stock = market_service.get_stock(symbol)
+            cached = stock_data_repo.get_score_data(symbol)
+        else:
+            stock = cached
+
     except SymbolNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -42,7 +49,7 @@ def get_score(symbol: str):
             unavailable_reason="Score unavailable because required financial data is incomplete.",
         )
 
-    raw_cache = stock_data_repo.get(symbol.upper())
+    raw_cache = cached
 
     # Apply unified data quality gate
     gate_report = DataQualityGate.assess(

@@ -5,6 +5,7 @@ from typing import Dict, List
 from app.repositories.daily_top_picks_repository import DailyTopPicksRepository
 from app.repositories.alpha_portfolio_repository import AlphaPortfolioRepository
 from app.repositories.alpha_history_repository import AlphaHistoryRepository
+from app.repositories.stock_data_repository import StockDataRepository
 from app.services.market_data_service import MarketDataService
 
 
@@ -33,9 +34,17 @@ class AlphaPortfolioService:
         self.alpha_repo = AlphaPortfolioRepository()
         self.history_repo = AlphaHistoryRepository()
         self.market = MarketDataService()
+        self.stock_data_repo = StockDataRepository()
         self.logger = logging.getLogger(__name__)
 
     def _get_current_price(self, symbol: str) -> float:
+        cached = self.stock_data_repo.get_quote_data(symbol)
+        if cached:
+            quote = cached.get("quote_json") or {}
+            current_price = quote.get("current_price")
+            if current_price is not None and float(current_price) > 0:
+                return float(current_price)
+
         payload = self.market.get_stock(symbol)
         quote = payload.get("quote_json") or {}
         current_price = quote.get("current_price")

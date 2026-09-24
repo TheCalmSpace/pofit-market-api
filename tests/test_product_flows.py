@@ -221,6 +221,7 @@ class TestAuthenticatedProductRoutes:
     def test_generation_persists_fifty_ranked_records(self):
         service = DailyTopPicksService.__new__(DailyTopPicksService)
         service.stock_repo = MagicMock()
+        service.stock_data_repo = MagicMock()
         service.market = MagicMock()
         service.alpha_filter = MagicMock()
         service.repository = MagicMock()
@@ -229,7 +230,13 @@ class TestAuthenticatedProductRoutes:
             {"symbol": f"S{index:02d}", "company_name": "Company", "exchange": "NSE"}
             for index in range(50)
         ]
-        service.market.get_stock_for_top_picks.side_effect = [
+        service.stock_repo.get_many_by_symbol_for_top_picks.return_value = [
+            {"symbol": f"S{index:02d}", "exchange": "NSE"}
+            for index in range(50)
+        ]
+        service.stock_data_repo.get_many_for_top_picks.return_value = []
+        service.market._is_cache_valid.return_value = False
+        service.market.refresh_stock.side_effect = [
             {
                 "eligibility_json": {"financials_complete": True},
                 "score_json": {
@@ -281,12 +288,14 @@ class TestAlphaPortfolio:
         service.alpha_repo = MagicMock()
         service.history_repo = MagicMock()
         service.market = MagicMock()
+        service.stock_data_repo = MagicMock()
         service.logger = MagicMock()
         service.alpha_repo.get_all.return_value = []
         service.alpha_repo.insert_one.return_value = {"symbol": "ABC"}
         service.daily_repo.get_country.return_value = [
             {"symbol": "ABC", "company_name": "ABC Co", "exchange": "NSE", "overall_score": 90, "rank": 1}
         ]
+        service.stock_data_repo.get_quote_data.return_value = None
         service.market.get_stock.return_value = {
             "quote_json": {"current_price": 123.45}
         }

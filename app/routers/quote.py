@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.dependencies import require_authenticated_user
 from app.models import ErrorResponse, QuoteResponse
-
+from app.repositories.stock_data_repository import StockDataRepository
 from app.services.market_data_service import MarketDataService
 from app.services.yahoo_service import (
     MarketDataUnavailableError,
@@ -16,6 +16,7 @@ router = APIRouter(
 )
 
 market_service = MarketDataService()
+stock_data_repo = StockDataRepository()
 
 
 @router.get(
@@ -28,6 +29,10 @@ market_service = MarketDataService()
 )
 def get_quote(symbol: str) -> QuoteResponse:
     try:
+        cached = stock_data_repo.get_quote_data(symbol)
+
+        if cached and market_service._is_cache_valid(cached):
+            return QuoteResponse(**cached["quote_json"])
 
         stock = market_service.get_stock(symbol)
 

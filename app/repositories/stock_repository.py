@@ -48,7 +48,7 @@ class StockRepository:
 
         result = (
             supabase.table("stocks")
-            .select("*")
+            .select("symbol, exchange")
             .eq("symbol", symbol.upper())
             .eq("is_active", True)
             .limit(1)
@@ -77,6 +77,32 @@ class StockRepository:
             return None
 
         return result.data[0]
+
+    def get_many_by_symbol_for_top_picks(
+        self,
+        symbols: List[str],
+    ) -> List[Dict[str, Any]]:
+        """Return stock metadata for multiple symbols for Top Picks.
+
+        Selects only: symbol, exchange
+        """
+        if not symbols:
+            return []
+
+        symbols_upper = [s.upper() for s in symbols]
+        or_filter = ",".join(
+            "symbol.eq.{}".format(s) for s in symbols_upper
+        )
+
+        result = (
+            supabase.table("stocks")
+            .select("symbol, exchange")
+            .or_(or_filter)
+            .eq("is_active", True)
+            .execute()
+        )
+
+        return result.data or []
 
     def list_all_active(self) -> List[Dict[str, Any]]:
         """Return the full active stock universe for benchmarking."""

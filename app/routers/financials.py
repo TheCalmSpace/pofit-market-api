@@ -40,6 +40,6 @@ def get_financials(symbol: str) -> FinancialsResponse:
 
 
 def _resolve_symbol(symbol: str) -> str:
-    stock = stock_repo.get_by_symbol(symbol.upper())
+    stock = stock_repo.get_by_symbol_for_top_picks(symbol.upper())
     exchange = stock.get("exchange") if stock else None
     return resolve_yahoo_symbol(symbol.upper(), exchange)

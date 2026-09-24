@@ -109,7 +109,7 @@ async def get_metrics(symbol: str):
 
 def _resolve_symbol(symbol: str) -> str:
     try:
-        stock = stock_repo.get_by_symbol(symbol.upper())
+        stock = stock_repo.get_by_symbol_for_top_picks(symbol.upper())
     except Exception:
         stock = None
     exchange = stock.get("exchange") if stock else None

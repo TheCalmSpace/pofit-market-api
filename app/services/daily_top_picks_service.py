@@ -5,6 +5,7 @@ from app.repositories.stock_repository import StockRepository
 from app.repositories.daily_top_picks_repository import (
     DailyTopPicksRepository,
 )
+from app.repositories.stock_data_repository import StockDataRepository
 from app.services.market_data_service import MarketDataService
 from app.services.alpha_filter_service import AlphaFilterService
 from app.services.yahoo_service import (
@@ -30,6 +31,7 @@ class DailyTopPicksService:
         self.alpha_filter = AlphaFilterService()
 
         self.stock_repo = StockRepository()
+        self.stock_data_repo = StockDataRepository()
 
         self.repository = DailyTopPicksRepository()
 
@@ -56,6 +58,14 @@ class DailyTopPicksService:
         print(f"{country}: Found {len(universe)} stocks")
         print("=" * 80)
 
+        symbols = [stock["symbol"] for stock in universe]
+
+        stock_meta_list = self.stock_repo.get_many_by_symbol_for_top_picks(symbols)
+        stock_data_list = self.stock_data_repo.get_many_for_top_picks(symbols)
+
+        stock_meta = {s["symbol"]: s for s in stock_meta_list}
+        stock_data = {s["symbol"]: s for s in stock_data_list}
+
         ranked: List[Dict[str, Any]] = []
 
         for stock in universe:
@@ -63,7 +73,17 @@ class DailyTopPicksService:
             symbol = stock["symbol"]
 
             try:
-                payload = self.market.get_stock_for_top_picks(symbol)
+                meta = stock_meta.get(symbol)
+                if not meta:
+                    self.logger.info("Skipping %s: stock metadata not found", symbol)
+                    continue
+
+                cached = stock_data.get(symbol)
+
+                if cached and self.market._is_cache_valid(cached):
+                    payload = cached
+                else:
+                    payload = self.market.refresh_stock(symbol, stock=meta)
 
                 print(f"{symbol} -> payload keys: {list(payload.keys())}")
 

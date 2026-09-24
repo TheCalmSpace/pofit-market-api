@@ -107,7 +107,7 @@ class TestScoreSafety:
     @patch("app.routers.score.stock_data_repo")
     @patch("app.routers.score.market_service")
     def test_stale_score_returns_insufficient_data(self, mock_market, mock_repo):
-        mock_repo.get.return_value = {
+        mock_repo.get_score_data.return_value = {
             "score_json": {
                 "symbol": "RELIANCE.NS",
                 "overall_score": 51.84,
@@ -145,7 +145,8 @@ class TestScoreSafety:
                 ],
             },
         }
-        mock_market.get_stock.return_value = mock_repo.get.return_value
+        mock_market._is_cache_valid.return_value = False
+        mock_market.get_stock.return_value = mock_repo.get_score_data.return_value
 
         response = client.get("/score/RELIANCE", headers=AUTH_HEADERS)
         assert response.status_code == 200
@@ -157,7 +158,7 @@ class TestScoreSafety:
     @patch("app.routers.score.market_service")
     def test_fresh_score_returns_score(self, mock_market, mock_repo):
         now = datetime.utcnow().isoformat() + "Z"
-        mock_repo.get.return_value = {
+        mock_repo.get_score_data.return_value = {
             "score_json": {
                 "symbol": "INFY.NS",
                 "overall_score": 58.01,
@@ -195,7 +196,8 @@ class TestScoreSafety:
                 ],
             },
         }
-        mock_market.get_stock.return_value = mock_repo.get.return_value
+        mock_market._is_cache_valid.return_value = True
+        mock_market.get_stock.return_value = mock_repo.get_score_data.return_value
 
         response = client.get("/score/INFY", headers=AUTH_HEADERS)
         assert response.status_code == 200
