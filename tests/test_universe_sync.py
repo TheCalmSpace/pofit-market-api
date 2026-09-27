@@ -65,7 +65,7 @@ class TestUniverseSyncService:
 
     @patch("app.services.universe_sync_service.supabase")
     def test_new_security_inserted(self, mock_supabase, service, mock_nse):
-        mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value.data = []
+        mock_supabase.table.return_value.select.return_value.eq.return_value.range.return_value.execute.return_value.data = []
         mock_supabase.table.return_value.insert.return_value.execute.return_value.data = [
             {"symbol": "RELIANCE", "isin": "INE002A01018"}
         ]
@@ -104,7 +104,7 @@ class TestUniverseSyncService:
                 "is_active": True,
             }
         ]
-        mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value.data = existing_data
+        mock_supabase.table.return_value.select.return_value.eq.return_value.range.return_value.execute.return_value.data = existing_data
         mock_supabase.table.return_value.update.return_value.eq.return_value.execute.return_value.data = existing_data
 
         mock_nse.fetch_sec_list.return_value = [
@@ -138,7 +138,7 @@ class TestUniverseSyncService:
                 "last_synced_at": None,
             }
         ]
-        mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value.data = existing_data
+        mock_supabase.table.return_value.select.return_value.eq.return_value.range.return_value.execute.return_value.data = existing_data
         mock_supabase.table.return_value.update.return_value.eq.return_value.execute.return_value.data = existing_data
 
         mock_nse.fetch_sec_list.return_value = [
@@ -172,7 +172,7 @@ class TestUniverseSyncService:
                 "last_synced_at": None,
             }
         ]
-        mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value.data = existing_data
+        mock_supabase.table.return_value.select.return_value.eq.return_value.range.return_value.execute.return_value.data = existing_data
         mock_supabase.table.return_value.update.return_value.eq.return_value.execute.return_value.data = existing_data
 
         mock_nse.fetch_sec_list.return_value = [
@@ -206,7 +206,7 @@ class TestUniverseSyncService:
                 "last_synced_at": None,
             }
         ]
-        mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value.data = existing_data
+        mock_supabase.table.return_value.select.return_value.eq.return_value.range.return_value.execute.return_value.data = existing_data
 
         mock_nse.fetch_sec_list.side_effect = Exception("NSE download failed")
 
@@ -218,7 +218,7 @@ class TestUniverseSyncService:
 
     @patch("app.services.universe_sync_service.supabase")
     def test_malformed_rows_skipped(self, mock_supabase, service, mock_nse):
-        mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value.data = []
+        mock_supabase.table.return_value.select.return_value.eq.return_value.range.return_value.execute.return_value.data = []
 
         mock_nse.fetch_sec_list.return_value = [
             {"Symbol": "", "Series": "EQ", "Security Name": "Bad Row"},
@@ -240,7 +240,7 @@ class TestUniverseSyncService:
 
     @patch("app.services.universe_sync_service.supabase")
     def test_dry_run_no_writes(self, mock_supabase, mock_nse):
-        mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value.data = []
+        mock_supabase.table.return_value.select.return_value.eq.return_value.range.return_value.execute.return_value.data = []
 
         mock_nse.fetch_sec_list.return_value = [
             {"Symbol": "RELIANCE", "Series": "EQ", "Security Name": "Reliance Industries Limited"}
@@ -264,7 +264,7 @@ class TestUniverseSyncService:
 
     @patch("app.services.universe_sync_service.supabase")
     def test_new_security_gets_newly_listed_status(self, mock_supabase, service, mock_nse):
-        mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value.data = []
+        mock_supabase.table.return_value.select.return_value.eq.return_value.range.return_value.execute.return_value.data = []
 
         mock_nse.fetch_sec_list.return_value = [
             {"Symbol": "NEWCO", "Series": "EQ", "Security Name": "New Company Limited"}
@@ -298,7 +298,7 @@ class TestUniverseSyncService:
                 "is_active": True,
             },
         ]
-        mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value.data = existing_data
+        mock_supabase.table.return_value.select.return_value.eq.return_value.range.return_value.execute.return_value.data = existing_data
         mock_supabase.table.return_value.update.return_value.eq.return_value.execute.return_value.data = existing_data
 
         mock_nse.fetch_sec_list.return_value = [

@@ -1,6 +1,11 @@
 from typing import Any, Dict, Optional, List
 
 from app.core.supabase import supabase
+from app.utils.postgrest import (
+    SYMBOL_BATCH_SIZE,
+    batched,
+    normalized_unique_symbols,
+)
 
 
 class StockDataRepository:
@@ -116,23 +121,36 @@ class StockDataRepository:
         """Return cached stock_data for multiple symbols for Top Picks.
 
         Selects only: symbol, eligibility_json, score_json, cache_status, updated_at
+
+        Symbols are requested in batches of `SYMBOL_BATCH_SIZE`. A single
+        request covering the whole universe builds an `or=(symbol.eq.X,...)`
+        filter that travels in the request URL and is rejected by the gateway
+        with HTTP 400, so the universe must not be sent in one request.
         """
         if not symbols:
             return []
 
-        symbols_upper = [s.upper() for s in symbols]
-        or_filter = ",".join(
-            "symbol.eq.{}".format(s) for s in symbols_upper
-        )
+        symbols_upper = normalized_unique_symbols(symbols)
+        if not symbols_upper:
+            return []
 
-        result = (
-            supabase.table("stock_data")
-            .select("symbol, eligibility_json, score_json, cache_status, updated_at")
-            .or_(or_filter)
-            .execute()
-        )
+        results: List[Dict[str, Any]] = []
 
-        return result.data or []
+        for batch in batched(symbols_upper, SYMBOL_BATCH_SIZE):
+            or_filter = ",".join(
+                "symbol.eq.{}".format(s) for s in batch
+            )
+
+            result = (
+                supabase.table("stock_data")
+                .select("symbol, eligibility_json, score_json, cache_status, updated_at")
+                .or_(or_filter)
+                .execute()
+            )
+
+            results.extend(result.data or [])
+
+        return results
 
     def get_quote_data(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Return lightweight quote cache data for a symbol."""

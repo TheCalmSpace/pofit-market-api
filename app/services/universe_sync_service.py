@@ -13,6 +13,13 @@ from app.services.nse_client import NSEClient
 logger = logging.getLogger(__name__)
 
 
+# PostgREST caps a single response at 1000 rows (the project `max-rows`
+# setting), so any read of the NSE universe must be paginated. The universe is
+# larger than that today, so an unpaginated read silently returns only the
+# first page and every stock outside it is misclassified as newly listed.
+UNIVERSE_PAGE_SIZE = 1000
+
+
 @dataclass
 class SyncReport:
     nse_records_discovered: int = 0
@@ -23,6 +30,7 @@ class SyncReport:
     newly_listed: int = 0
     inactive: int = 0
     failed_rows: int = 0
+    insert_failures: int = 0
     sync_duration_seconds: float = 0.0
     final_status: str = "pending"
     errors: List[str] = field(default_factory=list)
@@ -33,7 +41,8 @@ class SyncReport:
             f"new={self.new_securities} updated={self.updated_securities} "
             f"unchanged={self.unchanged_securities} symbol_changes={self.symbol_changes} "
             f"newly_listed={self.newly_listed} inactive={self.inactive} "
-            f"failed={self.failed_rows} duration={self.sync_duration_seconds:.1f}s "
+            f"failed={self.failed_rows} insert_failures={self.insert_failures} "
+            f"duration={self.sync_duration_seconds:.1f}s "
             f"status={self.final_status}"
         )
 
@@ -45,13 +54,38 @@ class UniverseSyncService:
         self.report = SyncReport()
 
     def _fetch_existing_universe(self) -> Dict[str, Dict[str, Any]]:
-        result = (
-            supabase.table("stocks")
-            .select("id, symbol, company_name, isin, exchange, status, last_synced_at")
-            .eq("exchange", "NSE")
-            .execute()
-        )
-        records = result.data or []
+        """Load the complete existing NSE universe.
+
+        Paginated because PostgREST returns at most 1000 rows per response and
+        the NSE universe is larger than that. Reading only the first page would
+        hide existing stocks from `_find_existing`, which would make the sync
+        attempt to re-insert them as newly listed.
+        """
+        records: List[Dict[str, Any]] = []
+        offset = 0
+
+        while True:
+            result = (
+                supabase.table("stocks")
+                .select("id, symbol, company_name, isin, exchange, status, last_synced_at")
+                .eq("exchange", "NSE")
+                .range(offset, offset + UNIVERSE_PAGE_SIZE - 1)
+                .execute()
+            )
+            rows = result.data or []
+
+            if not rows:
+                break
+
+            records.extend(rows)
+
+            if len(rows) < UNIVERSE_PAGE_SIZE:
+                break
+
+            offset += UNIVERSE_PAGE_SIZE
+
+        logger.info("Loaded %d existing NSE securities from Supabase", len(records))
+
         by_isin: Dict[str, Dict[str, Any]] = {}
         by_symbol: Dict[str, Dict[str, Any]] = {}
         for rec in records:
@@ -81,7 +115,6 @@ class UniverseSyncService:
         isin_map: Dict[str, str],
     ) -> Dict[str, Any]:
         symbol = sec["Symbol"].upper()
-        series = NSEClient.normalize_series(sec.get("Series", "EQ"))
         company_name = NSEClient.normalize_company_name(sec["Security Name"])
         isin = (meta.get("isin") or "").strip() or None
         if not isin:
@@ -90,9 +123,14 @@ class UniverseSyncService:
         nse_status = NSEClient.parse_meta_status(meta)
         sector, industry = NSEClient.infer_sector_industry(meta)
 
+        # NOTE: the NSE `series` is intentionally not persisted. It is only
+        # used to decide whether a row is a tradable series (see `run`), and
+        # `public.stocks` has no `series` column. Sending it made every
+        # new-listing INSERT fail with SQLSTATE 42703
+        # ("column stocks.series does not exist"), so no new NSE listing was
+        # ever stored.
         payload: Dict[str, Any] = {
             "symbol": symbol,
-            "series": series,
             "company_name": company_name,
             "isin": isin,
             "status": nse_status,
@@ -183,10 +221,23 @@ class UniverseSyncService:
                         supabase.table("stocks").insert(payload).execute()
                         self.report.new_securities += 1
                         self.report.newly_listed += 1
+                        logger.info("Inserted newly listed security %s (%s)", symbol, isin)
                     except Exception as exc:
-                        logger.error("Failed to insert %s: %s", symbol, exc)
+                        # A failed INSERT means a genuinely new listing was not
+                        # stored. The row is still counted so the run continues,
+                        # but the error is logged in full and forces the report
+                        # to FAILED so the scheduled job exits non-zero instead
+                        # of reporting a green run that silently dropped stocks.
+                        message = f"insert {symbol} (isin={isin}): {exc}"
+                        logger.error(
+                            "Failed to insert newly listed security %s: %s: %s",
+                            symbol,
+                            type(exc).__name__,
+                            exc,
+                        )
                         self.report.failed_rows += 1
-                        self.report.errors.append(f"insert {symbol}: {exc}")
+                        self.report.insert_failures += 1
+                        self.report.errors.append(message)
             else:
                 changes = self._detect_changes(rec, payload)
                 if changes:
@@ -225,7 +276,12 @@ class UniverseSyncService:
                     self.report.unchanged_securities += 1
 
         self.report.sync_duration_seconds = time.time() - start
-        if self.report.failed_rows > 0 and self.report.new_securities == 0 and self.report.updated_securities == 0:
+        if self.report.insert_failures > 0:
+            # Never report success/partial success when new listings were
+            # dropped by the database. The scheduled workflow turns FAILED into
+            # a non-zero exit code.
+            self.report.final_status = "FAILED"
+        elif self.report.failed_rows > 0 and self.report.new_securities == 0 and self.report.updated_securities == 0:
             self.report.final_status = "FAILED"
         elif self.report.failed_rows > 0:
             self.report.final_status = "PARTIAL_SUCCESS"
@@ -233,4 +289,10 @@ class UniverseSyncService:
             self.report.final_status = "SUCCESS"
 
         logger.info(self.report.summary())
+        if self.report.errors:
+            logger.error(
+                "Universe sync finished with %d error(s); first 10: %s",
+                len(self.report.errors),
+                self.report.errors[:10],
+            )
         return self.report

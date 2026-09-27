@@ -1,6 +1,11 @@
 from typing import List, Optional, Dict, Any
 
 from app.core.supabase import supabase
+from app.utils.postgrest import (
+    SYMBOL_BATCH_SIZE,
+    batched,
+    normalized_unique_symbols,
+)
 
 
 class StockRepository:
@@ -85,24 +90,38 @@ class StockRepository:
         """Return stock metadata for multiple symbols for Top Picks.
 
         Selects only: symbol, exchange
+
+        Symbols are requested in batches of `SYMBOL_BATCH_SIZE`. A single
+        request covering the whole universe builds an `or=(symbol.eq.X,...)`
+        filter that PostgREST cannot accept, because it travels in the request
+        URL. Batching keeps each URL small while still returning every symbol
+        that exists, for both the India and USA universes.
         """
         if not symbols:
             return []
 
-        symbols_upper = [s.upper() for s in symbols]
-        or_filter = ",".join(
-            "symbol.eq.{}".format(s) for s in symbols_upper
-        )
+        symbols_upper = normalized_unique_symbols(symbols)
+        if not symbols_upper:
+            return []
 
-        result = (
-            supabase.table("stocks")
-            .select("symbol, exchange")
-            .or_(or_filter)
-            .eq("is_active", True)
-            .execute()
-        )
+        results: List[Dict[str, Any]] = []
 
-        return result.data or []
+        for batch in batched(symbols_upper, SYMBOL_BATCH_SIZE):
+            or_filter = ",".join(
+                "symbol.eq.{}".format(s) for s in batch
+            )
+
+            result = (
+                supabase.table("stocks")
+                .select("symbol, exchange")
+                .or_(or_filter)
+                .eq("is_active", True)
+                .execute()
+            )
+
+            results.extend(result.data or [])
+
+        return results
 
     def list_all_active(self) -> List[Dict[str, Any]]:
         """Return the full active stock universe for benchmarking."""
