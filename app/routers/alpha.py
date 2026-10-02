@@ -51,13 +51,62 @@ def history(market: Optional[str] = None, limit: int = 200):
 	return result.data or []
 
 
+def _build_performance_summary(market: str) -> dict:
+	"""Build the Alpha performance payload from stored NAV snapshots.
+
+	Returns are derived with the canonical `report_performance`
+	calculation over the stored NAV series, then converted from a
+	fraction to a percentage because the Alpha page renders these fields
+	with a `%` suffix and does not rescale them.
+
+	Reads are database-only. When fewer than two snapshots exist the
+	canonical calculation reports `not_available` and every return stays
+	None, so the page can show an explicit "building history" state
+	instead of a fabricated figure.
+	"""
+	market = (market or "").upper()
+	service = PerformanceService()
+	report = service.report_performance(market, "since-inception")
+	snapshot = perf_repo.get_latest(market) or {}
+
+	portfolio_pct = report.get("portfolio_return")
+	benchmark_pct = report.get("benchmark_return")
+
+	if portfolio_pct is not None:
+		portfolio_pct = portfolio_pct * 100.0
+	if benchmark_pct is not None:
+		benchmark_pct = benchmark_pct * 100.0
+
+	alpha = (
+		portfolio_pct - benchmark_pct
+		if portfolio_pct is not None and benchmark_pct is not None
+		else None
+	)
+
+	return {
+		"market": market,
+		"period": report.get("period"),
+		"status": report.get("status"),
+		"portfolio_return": portfolio_pct,
+		"benchmark_return": benchmark_pct,
+		"alpha": alpha,
+		"portfolio_nav": snapshot.get("portfolio_nav"),
+		"benchmark_nav": snapshot.get("benchmark_nav"),
+		"as_of": snapshot.get("as_of") or report.get("as_of"),
+		"date": snapshot.get("date"),
+		"holdings_count": snapshot.get("holdings_count") or 0,
+		"benchmark": report.get("benchmark"),
+		"reason": report.get("reason"),
+	}
+
+
 @router.get("/performance")
 def performance(market: Optional[str] = None):
 	if market:
-		return perf_repo.get_latest(market)
+		return _build_performance_summary(market)
 	return {
-		"india": perf_repo.get_latest("IN"),
-		"usa": perf_repo.get_latest("US"),
+		"india": _build_performance_summary("IN"),
+		"usa": _build_performance_summary("US"),
 	}
 
 

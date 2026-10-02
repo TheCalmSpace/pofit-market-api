@@ -3,6 +3,7 @@ from app.models.financials import FinancialsResponse
 from app.models.quote import (
 	ErrorResponse,
 	AlphaPerformanceReportResponse,
+	AlphaPerformanceSummaryResponse,
 	HealthResponse,
 	HistoricalPrice,
 	HistoricalResponse,
@@ -14,6 +15,7 @@ from app.models.quote import (
 __all__ = [
 	"ErrorResponse",
 	"AlphaPerformanceReportResponse",
+	"AlphaPerformanceSummaryResponse",
 	"FinancialHistoryAnnualItem",
 	"FinancialHistoryResponse",
 	"FinancialsResponse",

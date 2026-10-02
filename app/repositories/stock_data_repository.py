@@ -167,6 +167,43 @@ class StockDataRepository:
 
         return result.data[0]
 
+    def get_quote_data_many(
+        self, symbols: List[str]
+    ) -> List[Dict[str, Any]]:
+        """Return lightweight quote cache rows for many symbols.
+
+        Selects only: symbol, quote_json, updated_at. Used by
+        PerformanceService, which reads prices exclusively from the
+        existing ingestion cache and must never make an external call.
+
+        Symbols are requested in batches of `SYMBOL_BATCH_SIZE` for the
+        same URL-length reason documented in `get_many_for_top_picks`.
+        """
+        if not symbols:
+            return []
+
+        symbols_upper = normalized_unique_symbols(symbols)
+        if not symbols_upper:
+            return []
+
+        results: List[Dict[str, Any]] = []
+
+        for batch in batched(symbols_upper, SYMBOL_BATCH_SIZE):
+            or_filter = ",".join(
+                "symbol.eq.{}".format(s) for s in batch
+            )
+
+            result = (
+                supabase.table("stock_data")
+                .select("symbol, quote_json, updated_at")
+                .or_(or_filter)
+                .execute()
+            )
+
+            results.extend(result.data or [])
+
+        return results
+
     def get_score_data(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Return lightweight score cache data for a symbol."""
         result = (

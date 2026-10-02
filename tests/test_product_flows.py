@@ -1,5 +1,6 @@
 import asyncio
-from datetime import date
+from datetime import date, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -9,6 +10,7 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 from app.dependencies import get_optional_authenticated_user
+from app.models import AlphaPerformanceSummaryResponse
 from app.routers import (
     alpha,
     daily_top_picks,
@@ -392,12 +394,19 @@ class TestAlphaPortfolio:
         service.alpha_repo.insert_one.assert_not_called()
         service.history_repo.insert_event.assert_not_called()
 
-    def test_performance_uses_stored_entry_price_and_reuses_benchmark_history(self):
+    def test_performance_snapshot_is_egress_neutral_and_steps_nav_from_cache(self):
+        """Snapshot NAV must come from the ingestion cache only.
+
+        This test previously asserted that a Yahoo historical download was
+        made for the benchmark. Ingestion already covers every Alpha
+        holding, so the snapshot reads `stock_data.quote_json` and makes no
+        external market-data call at all.
+        """
         service = PerformanceService.__new__(PerformanceService)
         service.alpha_repo = MagicMock()
         service.performance_repo = MagicMock()
         service.alpha_history_repo = MagicMock()
-        service.market = MagicMock()
+        service.stock_data_repo = MagicMock()
         service.alpha_history_repo.get_events_up_to.return_value = [
             {"symbol": "ABC", "action": "ADD"},
             {"symbol": "DEF", "action": "ADD"},
@@ -414,25 +423,250 @@ class TestAlphaPortfolio:
                 "entry_date": "2026-01-01T00:00:00+00:00",
             },
         ]
-        service.market.get_stock.side_effect = [
-            {"quote_json": {"current_price": 110.0}},
-            {"quote_json": {"current_price": 220.0}},
+        service.performance_repo.get_latest.return_value = {
+            "portfolio_nav": 100.0,
+            "benchmark_nav": 100.0,
+        }
+        service.stock_data_repo.get_quote_data_many.return_value = [
+            {
+                "symbol": "ABC",
+                "quote_json": {"current_price": 110.0, "previous_close": 100.0},
+                "updated_at": datetime.utcnow().isoformat(),
+            },
+            {
+                "symbol": "DEF",
+                "quote_json": {"current_price": 220.0, "previous_close": 200.0},
+                "updated_at": datetime.utcnow().isoformat(),
+            },
         ]
-        service.market.yahoo.get_quote.return_value = SimpleNamespace(current_price=105.0)
-        service.market.yahoo.get_historical_prices.return_value = SimpleNamespace(
-            prices=[SimpleNamespace(date=date(2026, 1, 1), close=100.0)]
+
+        # Any provider attribute access is a hard failure.
+        service.market = SimpleNamespace(
+            __getattr__=lambda *_: pytest.fail("external call attempted")
         )
 
         result = service.snapshot_market("IN")
 
         assert result["holdings_count"] == 2
-        assert result["portfolio_return"] == pytest.approx(0.1)
-        assert result["benchmark_return"] == pytest.approx(0.05)
-        assert result["alpha"] == pytest.approx(0.05)
-        service.market.yahoo.get_historical_prices.assert_called_once_with(
-            "^NSEI", period="max", interval="1d"
-        )
+        # ABC +10% and DEF +10% average to +10%, so NAV steps 100 -> 110.
+        assert result["portfolio_nav"] == pytest.approx(110.0)
+        assert result["date"]
+        assert result["period"] == "INCEPTION"
         service.performance_repo.insert_snapshot.assert_called_once()
+
+        payload = service.performance_repo.insert_snapshot.call_args[0][0]
+        for field in ("date", "as_of", "period", "holdings_count"):
+            assert field in payload
+
+    def test_performance_never_touches_a_market_data_provider(self):
+        service = PerformanceService.__new__(PerformanceService)
+        assert not hasattr(service, "market")
+
+        # The service module must not import or reference a provider.
+        import app.services.performance_service as perf_module
+
+        module_source = Path(perf_module.__file__).read_text(encoding="utf-8")
+        for forbidden in (
+            "self.market",
+            "get_quote(",
+            "get_historical_prices",
+            "get_financials",
+            "MarketDataService",
+            "YahooService",
+            "YahooProvider",
+            "yahoo",
+        ):
+            assert forbidden not in module_source, (
+                "performance_service.py must not reference %s" % forbidden
+            )
+
+
+class TestAlphaPerformanceApi:
+    """F/G/H: the /alpha/performance contract consumed by the Alpha page."""
+
+    def _get(self, path, report, latest=None):
+        """Issue a request with the canonical calculation stubbed out.
+
+        The stub must stay active for the duration of the request, so the
+        client is exercised inside the patch context.
+        """
+        app = FastAPI()
+        app.include_router(alpha.router)
+
+        fake_perf_repo = MagicMock()
+        fake_perf_repo.get_latest.return_value = latest
+
+        with patch.object(alpha, "perf_repo", fake_perf_repo), patch.object(
+            alpha.PerformanceService,
+            "report_performance",
+            return_value=report,
+        ):
+            return TestClient(app).get(path)
+
+    def test_returns_frontend_contract_fields(self):
+        response = self._get(
+            "/alpha/performance?market=IN",
+            {
+                "market": "IN",
+                "period": "since-inception",
+                "status": "available",
+                "benchmark": "^NSEI",
+                "portfolio_return": 0.12,
+                "benchmark_return": 0.05,
+                "excess_return": 0.07,
+                "as_of": "2026-09-21T00:00:00",
+                "holdings_count": 15,
+                "reason": None,
+            },
+            latest={
+                "date": "2026-09-21",
+                "as_of": "2026-09-21T00:00:00",
+                "portfolio_nav": 112.0,
+                "benchmark_nav": 105.0,
+                "holdings_count": 15,
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        for field in (
+            "portfolio_return",
+            "benchmark_return",
+            "alpha",
+            "portfolio_nav",
+            "benchmark_nav",
+            "as_of",
+            "date",
+            "holdings_count",
+        ):
+            assert field in body, "response is missing %s" % field
+
+        # Percent scale, because the page appends "%" without rescaling.
+        assert body["portfolio_return"] == pytest.approx(12.0)
+        assert body["benchmark_return"] == pytest.approx(5.0)
+        assert body["portfolio_nav"] == pytest.approx(112.0)
+        assert body["date"] == "2026-09-21"
+        assert body["holdings_count"] == 15
+
+    def test_alpha_equals_portfolio_minus_benchmark(self):
+        response = self._get(
+            "/alpha/performance?market=IN",
+            {
+                "market": "IN",
+                "period": "since-inception",
+                "status": "available",
+                "benchmark": "^NSEI",
+                "portfolio_return": -0.08,
+                "benchmark_return": 0.03,
+                "excess_return": -0.11,
+                "as_of": "2026-09-21T00:00:00",
+                "holdings_count": 15,
+                "reason": None,
+            }
+        )
+
+        body = response.json()
+
+        assert body["alpha"] == pytest.approx(
+            body["portfolio_return"] - body["benchmark_return"]
+        )
+        assert body["alpha"] == pytest.approx(-11.0)
+
+    def test_insufficient_history_returns_explicit_empty_state(self):
+        response = self._get(
+            "/alpha/performance?market=IN",
+            {
+                "market": "IN",
+                "period": "since-inception",
+                "status": "not_available",
+                "benchmark": "^NSEI",
+                "portfolio_return": None,
+                "benchmark_return": None,
+                "excess_return": None,
+                "as_of": "2026-09-21T00:00:00",
+                "holdings_count": 0,
+                "reason": "Insufficient historical performance data for this period",
+            }
+        )
+
+        body = response.json()
+
+        assert body["status"] == "not_available"
+        assert body["portfolio_return"] is None
+        assert body["benchmark_return"] is None
+        assert body["alpha"] is None
+        assert "Insufficient" in body["reason"]
+
+    def test_alpha_is_null_when_benchmark_is_null(self):
+        response = self._get(
+            "/alpha/performance?market=IN",
+            {
+                "market": "IN",
+                "period": "since-inception",
+                "status": "available",
+                "benchmark": "^NSEI",
+                "portfolio_return": 0.12,
+                "benchmark_return": None,
+                "excess_return": None,
+                "as_of": "2026-09-21T00:00:00",
+                "holdings_count": 15,
+                "reason": None,
+            }
+        )
+
+        body = response.json()
+
+        assert body["portfolio_return"] == pytest.approx(12.0)
+        assert body["benchmark_return"] is None
+        assert body["alpha"] is None
+
+    def test_response_matches_summary_model(self):
+        response = self._get(
+            "/alpha/performance?market=IN",
+            {
+                "market": "IN",
+                "period": "since-inception",
+                "status": "available",
+                "benchmark": "^NSEI",
+                "portfolio_return": 0.12,
+                "benchmark_return": 0.05,
+                "excess_return": 0.07,
+                "as_of": "2026-09-21T00:00:00",
+                "holdings_count": 15,
+                "reason": None,
+            }
+        )
+
+        body = response.json()
+
+        model = AlphaPerformanceSummaryResponse(**body)
+        assert model.market == "IN"
+        assert model.alpha == pytest.approx(7.0)
+
+    def test_market_omitted_returns_both_markets(self):
+        response = self._get(
+            "/alpha/performance",
+            {
+                "market": "IN",
+                "period": "since-inception",
+                "status": "available",
+                "benchmark": "^NSEI",
+                "portfolio_return": 0.12,
+                "benchmark_return": 0.05,
+                "excess_return": 0.07,
+                "as_of": "2026-09-21T00:00:00",
+                "holdings_count": 15,
+                "reason": None,
+            }
+        )
+
+        body = response.json()
+
+        assert set(body) == {"india", "usa"}
+        assert body["india"]["market"] == "IN"
+        assert body["usa"]["market"] == "US"
+        for key in ("india", "usa"):
+            assert "portfolio_return" in body[key]
 
 
 class TestDataCoverage:

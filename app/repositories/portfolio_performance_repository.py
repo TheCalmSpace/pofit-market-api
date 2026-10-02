@@ -12,10 +12,31 @@ class PortfolioPerformanceRepository:
 		data = {**snapshot, "market": market}
 		if not data.get("as_of"):
 			data["as_of"] = datetime.now(timezone.utc).isoformat()
+		if not data.get("date"):
+			data["date"] = self._derive_date(data["as_of"])
+		if not data.get("period"):
+			data["period"] = "INCEPTION"
 		result = supabase.table(self.TABLE).insert(data).execute()
 		if not result.data:
 			return None
 		return result.data[0]
+
+	@staticmethod
+	def _derive_date(as_of: Any) -> str:
+		"""Return the calendar date of `as_of` as YYYY-MM-DD.
+
+		`portfolio_performance.date` is NOT NULL in production. The
+		application reads and writes `as_of`, so `date` is derived from it
+		here rather than being stored independently. The column is neither
+		dropped nor made nullable, and the schema is left unchanged.
+		"""
+		if isinstance(as_of, datetime):
+			return as_of.date().isoformat()
+		if isinstance(as_of, date):
+			return as_of.isoformat()
+		text = str(as_of).strip()
+		# Handles both plain dates and ISO-8601 timestamps.
+		return text.split("T", 1)[0]
 
 	def get_latest(self, market: str) -> Optional[Dict[str, Any]]:
 		result = (

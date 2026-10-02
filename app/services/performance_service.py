@@ -1,12 +1,47 @@
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set
 
+import json
+
 from app.repositories.alpha_history_repository import AlphaHistoryRepository
 from app.repositories.alpha_portfolio_repository import AlphaPortfolioRepository
 from app.repositories.portfolio_performance_repository import (
 	PortfolioPerformanceRepository,
 )
-from app.services.market_data_service import MarketDataService
+from app.repositories.stock_data_repository import StockDataRepository
+
+# Bound at import time so `isinstance` checks keep working in tests that
+# patch the module-level `datetime`.
+_DATE_TYPE = date
+_DATETIME_TYPE = datetime
+
+
+def _as_positive_float(value: Any) -> Optional[float]:
+	"""Return `value` as a positive float, or None if it is unusable."""
+	if value is None:
+		return None
+	try:
+		number = float(value)
+	except (TypeError, ValueError):
+		return None
+	if number != number or number in (float("inf"), float("-inf")):
+		return None
+	return number if number > 0 else None
+
+
+def _is_from_trading_day(updated_at: Any, snapshot_date: str) -> bool:
+	"""True when a cached row was refreshed on the snapshot's trading day.
+
+	A cached row from an earlier day describes a different session. Chaining
+	its return would compound stale data, so such rows are skipped instead.
+	"""
+	if not updated_at:
+		return False
+	try:
+		text = str(updated_at)
+	except Exception:
+		return False
+	return text.split("T", 1)[0][:10] == snapshot_date
 
 
 class PerformanceService:
@@ -23,6 +58,14 @@ class PerformanceService:
 	- Benchmark NAV follows the same pattern for NIFTY 50 / NASDAQ.
 	- Historical reports compute period returns from the stored NAV series:
 	  period_return = (NAV_end / NAV_start) - 1
+
+	EGRESS CONTRACT (hard):
+	This service performs database reads, calculations, and database
+	writes ONLY. It holds no market-data provider and never calls Yahoo,
+	NSE, or any other external endpoint. Every price is read from the
+	existing `stock_data.quote_json` ingestion cache, which is already
+	populated by the bounded stock ingestion job. Adding a provider here
+	would raise network egress, so it is intentionally absent.
 	"""
 
 	BENCHMARKS = {
@@ -43,106 +86,189 @@ class PerformanceService:
 		self.alpha_repo = AlphaPortfolioRepository()
 		self.alpha_history_repo = AlphaHistoryRepository()
 		self.performance_repo = PortfolioPerformanceRepository()
-		self.market = MarketDataService()
+		self.stock_data_repo = StockDataRepository()
+
 
 	def snapshot_market(self, market: str) -> Optional[Dict[str, Any]]:
+		now = datetime.utcnow()
+		as_of = now.isoformat()
+		snapshot_date = now.date().isoformat()
+
 		rows = self.alpha_repo.get_all(market)
-
-		if not rows:
-			last = self.performance_repo.get_latest(market)
-			if last is None:
-				portfolio_nav = 100.0
-				benchmark_nav = 100.0
-			else:
-				portfolio_nav = last.get("portfolio_nav", 100.0)
-				benchmark_nav = last.get("benchmark_nav", 100.0)
-			snapshot = {
-				"market": market,
-				"as_of": datetime.utcnow().isoformat(),
-				"portfolio_nav": portfolio_nav,
-				"benchmark_nav": benchmark_nav,
-				"holdings_count": 0,
-			}
-			self.performance_repo.insert_snapshot(snapshot)
-			return snapshot
-
 		last = self.performance_repo.get_latest(market)
 
-		if last is None:
-			portfolio_nav = 100.0
-			benchmark_nav = 100.0
+		prev_nav = (
+			100.0
+			if last is None
+			else float(last.get("portfolio_nav") or 100.0)
+		)
+		prev_bench_nav = (
+			100.0
+			if last is None
+			else float(last.get("benchmark_nav") or 100.0)
+		)
+
+		diagnostics: Dict[str, Any] = {
+			"missing_prices": [],
+			"stale_prices": [],
+			"benchmark_status": None,
+			"nav_step": "baseline",
+		}
+
+		portfolio_nav = prev_nav
+		benchmark_nav = prev_bench_nav
+
+		if not rows:
+			diagnostics["nav_step"] = "no_holdings"
+		elif last is None:
+			diagnostics["nav_step"] = "baseline"
+		elif self._snapshot_date_of(last) == snapshot_date:
+			# The NAV series steps once per trading day. Re-running the
+			# snapshot later the same day must not chain a second daily
+			# return on top of the first, so the value carries forward.
+			diagnostics["nav_step"] = "already_recorded_for_date"
 		else:
-			prev_nav = last.get("portfolio_nav", 100.0)
-			prev_bench_nav = last.get("benchmark_nav", 100.0)
-
-			yesterday = self._get_yesterday_trading_date()
-
-			active_yesterday = self._get_active_symbols_as_of(
-				market, yesterday
+			diagnostics["nav_step"] = "daily_return"
+			portfolio_daily_return, benchmark_daily_return = (
+				self._daily_returns_from_cache(
+					rows, market, snapshot_date, diagnostics
+				)
 			)
-
-			holding_daily_returns: List[float] = []
-			for row in rows:
-				symbol = (row.get("symbol") or "").upper()
-				if symbol not in active_yesterday:
-					continue
-				try:
-					quote = self.market.yahoo.get_quote(symbol)
-					current_price = quote.current_price
-					yesterday_price = self._fetch_price_for_date(
-						symbol, -1
-					)
-					if current_price and yesterday_price and yesterday_price > 0:
-						holding_daily_returns.append(
-							(float(current_price) - float(yesterday_price))
-							/ float(yesterday_price)
-						)
-				except Exception:
-					continue
-
-			benchmark_daily_returns: List[float] = []
-			benchmark_symbol = self.BENCHMARKS.get(market.upper())
-			if benchmark_symbol:
-				try:
-					bench_quote = self.market.yahoo.get_quote(
-						benchmark_symbol
-					)
-					bench_current = bench_quote.current_price
-					bench_yesterday = self._fetch_price_for_date(
-						benchmark_symbol, -1
-					)
-					if bench_current and bench_yesterday and bench_yesterday > 0:
-						benchmark_daily_returns.append(
-							(float(bench_current) - float(bench_yesterday))
-							/ float(bench_yesterday)
-						)
-				except Exception:
-					pass
-
-			portfolio_daily_return = (
-				sum(holding_daily_returns) / len(holding_daily_returns)
-				if holding_daily_returns
-				else 0.0
-			)
-			benchmark_daily_return = (
-				sum(benchmark_daily_returns) / len(benchmark_daily_returns)
-				if benchmark_daily_returns
-				else 0.0
-			)
-
 			portfolio_nav = prev_nav * (1 + portfolio_daily_return)
-			benchmark_nav = prev_bench_nav * (1 + benchmark_daily_return)
+			if benchmark_daily_return is None:
+				benchmark_nav = prev_bench_nav
+			else:
+				benchmark_nav = prev_bench_nav * (1 + benchmark_daily_return)
 
-		snapshot = {
-			"market": market,
-			"as_of": datetime.utcnow().isoformat(),
+		payload = {
+			"market": (market or "").upper(),
+			"date": snapshot_date,
+			"as_of": as_of,
+			"period": "INCEPTION",
 			"portfolio_nav": portfolio_nav,
 			"benchmark_nav": benchmark_nav,
 			"holdings_count": len(rows),
 		}
 
-		self.performance_repo.insert_snapshot(snapshot)
-		return snapshot
+		self.performance_repo.insert_snapshot(payload)
+		return {**payload, "diagnostics": diagnostics}
+
+	def _daily_returns_from_cache(
+		self,
+		rows: List[Dict[str, Any]],
+		market: str,
+		snapshot_date: str,
+		diagnostics: Dict[str, Any],
+	) -> tuple:
+		"""Compute equal-weighted daily returns from the ingestion cache.
+
+		Returns (portfolio_daily_return, benchmark_daily_return).
+
+		The benchmark return is None when the benchmark index is not present
+		in the cache. Nothing is fetched externally and no price is invented:
+		a holding without usable cached data is reported in
+		`diagnostics["missing_prices"]` and contributes no return.
+		"""
+		yesterday = self._get_yesterday_trading_date()
+		active_yesterday = self._get_active_symbols_as_of(market, yesterday)
+
+		symbols = [
+			(row.get("symbol") or "").upper() for row in rows
+		]
+		symbols = [s for s in symbols if s]
+
+		cache = {
+			(str(row.get("symbol") or "")).upper(): row
+			for row in self.stock_data_repo.get_quote_data_many(symbols)
+		}
+
+		holding_daily_returns: List[float] = []
+		for row in rows:
+			symbol = (row.get("symbol") or "").upper()
+			if not symbol or symbol not in active_yesterday:
+				continue
+
+			cached = cache.get(symbol)
+			price = self._cached_daily_return(
+				cached, snapshot_date, diagnostics, symbol
+			)
+			if price is not None:
+				holding_daily_returns.append(price)
+
+		portfolio_daily_return = (
+			sum(holding_daily_returns) / len(holding_daily_returns)
+			if holding_daily_returns
+			else 0.0
+		)
+
+		benchmark_symbol = self.BENCHMARKS.get(market.upper())
+		benchmark_daily_return = None
+
+		if benchmark_symbol:
+			benchmark_daily_return = self._cached_daily_return(
+				cache.get(benchmark_symbol.upper()),
+				snapshot_date,
+				diagnostics,
+				benchmark_symbol,
+			)
+			diagnostics["benchmark_status"] = (
+				"cached" if benchmark_daily_return is not None else "missing"
+			)
+		else:
+			diagnostics["benchmark_status"] = "unmapped"
+
+		return portfolio_daily_return, benchmark_daily_return
+
+	@staticmethod
+	def _cached_daily_return(
+		cached: Optional[Dict[str, Any]],
+		snapshot_date: str,
+		diagnostics: Dict[str, Any],
+		label: str,
+	) -> Optional[float]:
+		"""Return the cached one-day return for `label`, or None.
+
+		Uses only `stock_data.quote_json`, which the bounded ingestion job
+		already populates. Returns None — never a fabricated number — when
+		the row is missing, the price fields are unusable, or the cached row
+		is not from the snapshot's trading day.
+		"""
+		if not cached:
+			diagnostics["missing_prices"].append(label)
+			return None
+
+		if not _is_from_trading_day(cached.get("updated_at"), snapshot_date):
+			diagnostics["stale_prices"].append(label)
+			return None
+
+		quote = cached.get("quote_json") or {}
+		if isinstance(quote, str):
+			try:
+				quote = json.loads(quote)
+			except (TypeError, ValueError):
+				quote = {}
+
+		current = _as_positive_float(quote.get("current_price"))
+		previous = _as_positive_float(quote.get("previous_close"))
+
+		if current is None or previous is None:
+			diagnostics["missing_prices"].append(label)
+			return None
+
+		return (current - previous) / previous
+
+	@staticmethod
+	def _snapshot_date_of(snapshot: Dict[str, Any]) -> Optional[str]:
+		"""Return the trading date recorded on a stored snapshot."""
+		raw = snapshot.get("date") or snapshot.get("as_of")
+		if raw is None:
+			return None
+		if isinstance(raw, _DATETIME_TYPE):
+			return raw.date().isoformat()
+		if isinstance(raw, _DATE_TYPE):
+			return raw.isoformat()
+		return str(raw).split("T", 1)[0]
+
 
 	def snapshot_all(self) -> Dict[str, Any]:
 		return {
@@ -275,36 +401,6 @@ class PerformanceService:
 				active.discard(symbol)
 
 		return active
-
-	def _fetch_price_for_date(
-		self, symbol: str, days_offset: int
-	) -> Optional[float]:
-		try:
-			target_date = (
-				datetime.utcnow() + timedelta(days=days_offset)
-			).date()
-			history = self.market.yahoo.get_historical_prices(
-				symbol, period="1mo", interval="1d"
-			)
-			return self._price_on_exact_date(history.prices, target_date)
-		except Exception:
-			return None
-
-	@staticmethod
-	def _price_on_exact_date(
-		prices: List[Any], target: date
-	) -> Optional[float]:
-		for item in prices:
-			d = getattr(item, "date", None)
-			if d is None:
-				continue
-			if hasattr(d, "date"):
-				d = d.date()
-			if d == target:
-				close = getattr(item, "close", None)
-				if close is not None:
-					return float(close)
-		return None
 
 	def _not_available(
 		self,
