@@ -251,7 +251,11 @@ class TestAuthenticatedProductRoutes:
         ]
         service.alpha_filter.is_eligible.return_value = (True, "Eligible")
 
-        rows = service.generate_country("IN")
+        # The refresh budget is raised for this test so it keeps covering the
+        # original contract: all 50 candidates are ranked and persisted. The
+        # bounded production default is covered separately in
+        # tests/test_top_picks_egress.py.
+        rows = service.generate_country("IN", refresh_budget=50, quote_refresh_budget=0)
 
         assert len(rows) == 50
         assert rows[0]["overall_score"] == 50.0
@@ -352,7 +356,7 @@ class TestAlphaPortfolio:
                 "symbol": "ABC",
                 "entry_price": 123.45,
                 "entry_date": "2026-01-01T00:00:00+00:00",
-                "score": 90,
+                "overall_score": 90,
                 "company_name": "ABC Co",
             }
         ]
@@ -392,7 +396,12 @@ class TestAlphaPortfolio:
         service = PerformanceService.__new__(PerformanceService)
         service.alpha_repo = MagicMock()
         service.performance_repo = MagicMock()
+        service.alpha_history_repo = MagicMock()
         service.market = MagicMock()
+        service.alpha_history_repo.get_events_up_to.return_value = [
+            {"symbol": "ABC", "action": "ADD"},
+            {"symbol": "DEF", "action": "ADD"},
+        ]
         service.alpha_repo.get_all.return_value = [
             {
                 "symbol": "ABC",

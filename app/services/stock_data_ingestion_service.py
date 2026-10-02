@@ -14,7 +14,13 @@ from app.utils.postgrest import batched, normalized_unique_symbols, SYMBOL_BATCH
 
 logger = logging.getLogger(__name__)
 
-INGESTION_BATCH_SIZE = int(os.getenv("STOCK_DATA_INGESTION_BATCH_SIZE", "30"))
+# Each full Yahoo refresh costs roughly 258 KB. The job runs every 4 hours
+# (6 times a day), so the default batch size of 30 already accounted for
+# about 45 MB/day on its own, on top of the Top Picks jobs. 12 keeps the
+# scheduled ingestion inside the shared daily egress budget while still
+# rotating the freshest symbols each cycle; a symbol that has never been
+# ingested is always prioritised over one that merely went stale.
+INGESTION_BATCH_SIZE = int(os.getenv("STOCK_DATA_INGESTION_BATCH_SIZE", "12"))
 CACHE_CHECK_BATCH_SIZE = SYMBOL_BATCH_SIZE
 
 

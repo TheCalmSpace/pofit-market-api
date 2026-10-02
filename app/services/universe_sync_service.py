@@ -31,6 +31,7 @@ class SyncReport:
     inactive: int = 0
     failed_rows: int = 0
     insert_failures: int = 0
+    meta_requests: int = 0
     sync_duration_seconds: float = 0.0
     final_status: str = "pending"
     errors: List[str] = field(default_factory=list)
@@ -42,6 +43,7 @@ class SyncReport:
             f"unchanged={self.unchanged_securities} symbol_changes={self.symbol_changes} "
             f"newly_listed={self.newly_listed} inactive={self.inactive} "
             f"failed={self.failed_rows} insert_failures={self.insert_failures} "
+            f"nse_meta_requests={self.meta_requests} "
             f"duration={self.sync_duration_seconds:.1f}s "
             f"status={self.final_status}"
         )
@@ -113,6 +115,7 @@ class UniverseSyncService:
         sec: Dict[str, str],
         meta: Dict[str, Any],
         isin_map: Dict[str, str],
+        existing: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         symbol = sec["Symbol"].upper()
         company_name = NSEClient.normalize_company_name(sec["Security Name"])
@@ -120,8 +123,31 @@ class UniverseSyncService:
         if not isin:
             isin = isin_map.get(company_name)
 
-        nse_status = NSEClient.parse_meta_status(meta)
+        meta_unavailable = bool(meta.get("error") or meta.get("skipped"))
+
+        if meta_unavailable:
+            # The bulk active-securities file is authoritative for "this equity
+            # is currently listed": it only lists live, active instruments. Use
+            # it to resolve the status instead of assuming LISTED for everything
+            # we could not verify individually, which previously pinned the
+            # entire NSE universe at `UNKNOWN`.
+            if isin:
+                nse_status = "LISTED"
+            else:
+                nse_status = (existing or {}).get("status") or "LISTED"
+            if existing:
+                isin = existing.get("isin") or isin
+                # is_active will be derived from preserved status below
+        else:
+            nse_status = NSEClient.parse_meta_status(meta)
+
         sector, industry = NSEClient.infer_sector_industry(meta)
+
+        if meta_unavailable and existing:
+            # Never overwrite a stored sector/industry with NULL just because
+            # NSE refused the metadata request.
+            sector = existing.get("sector") or sector
+            industry = existing.get("industry") or industry
 
         # NOTE: the NSE `series` is intentionally not persisted. It is only
         # used to decide whether a row is a tradable series (see `run`), and
@@ -143,8 +169,11 @@ class UniverseSyncService:
 
         if nse_status == "LISTED":
             payload["is_active"] = True
-        elif nse_status in ("DELISTED",):
+        elif nse_status in ("DELISTED", "SUSPENDED"):
             payload["is_active"] = False
+        elif existing and "is_active" in existing:
+            # Preserve is_active for other statuses (e.g., NEWLY_LISTED) when meta fails
+            payload["is_active"] = existing.get("is_active")
 
         return payload
 
@@ -178,8 +207,22 @@ class UniverseSyncService:
         existing = self._fetch_existing_universe()
         isin_map = self.nse.fetch_active_securities_isin()
 
+        # `nseindia.com` is aggressively protected: it answers 403 to anything
+        # that is not a warmed-up browser session. `equity_meta_info` was
+        # therefore called once per symbol on every nightly run (3,574 requests
+        # at 3 req/s, roughly 20 minutes of traffic) and returned an error for
+        # effectively all of them, which is why 3,535 of 3,566 NSE rows carry
+        # `status = 'UNKNOWN'` with a NULL isin, sector and industry.
+        #
+        # Per-symbol metadata is now requested only for symbols that are new to
+        # the table, where it enriches the row with sector and industry and is
+        # worth a single request. Everything already known is identified from
+        # `sec_list.csv` plus the bulk active-securities CSV, both of which come
+        # from `nsearchives.nseindia.com` and still respond normally, so the
+        # nightly run costs two file downloads instead of 3,574 HTTP requests.
         seen_symbols: Set[str] = set()
         seen_isins: Set[str] = set()
+        meta_calls = 0
 
         for sec in sec_list:
             symbol = sec.get("Symbol", "").upper().strip()
@@ -194,22 +237,40 @@ class UniverseSyncService:
                 continue
             seen_symbols.add(symbol)
 
-            try:
-                meta = self.nse.equity_meta_info(symbol)
-            except Exception as exc:
-                logger.warning("Failed to fetch meta for %s: %s", symbol, exc)
-                self.report.failed_rows += 1
-                self.report.errors.append(f"{symbol}: {exc}")
-                continue
+            company_name = NSEClient.normalize_company_name(sec["Security Name"])
+            bulk_isin = isin_map.get(company_name)
 
-            payload = self._build_sync_payload(sec, meta, isin_map)
+            # Metadata is requested only for symbols the bulk
+            # active-securities file cannot vouch for. Those are the symbols
+            # whose ISIN is still unknown, so the metadata call is what lets
+            # the existing row be matched by ISIN (catching an NSE symbol
+            # rename) and what detects a DELISTED or SUSPENDED status. A
+            # symbol the bulk file does list is resolved without any
+            # per-symbol request. In practice that is a few hundred requests a
+            # night rather than the whole universe.
+            if bulk_isin:
+                meta = {"symbol": symbol, "skipped": True}
+            else:
+                meta_calls += 1
+                try:
+                    meta = self.nse.equity_meta_info(symbol)
+                except Exception as exc:
+                    logger.warning("Failed to fetch meta for %s: %s", symbol, exc)
+                    self.report.failed_rows += 1
+                    self.report.errors.append(f"{symbol}: {exc}")
+                    meta = {"symbol": symbol, "error": str(exc)}
+
+            lookup_isin = (meta.get("isin") or "").strip() or bulk_isin
+
+            rec = self._find_existing(lookup_isin, symbol, existing)
+
+            payload = self._build_sync_payload(sec, meta, isin_map, rec)
             isin = payload.get("isin")
             if isin:
                 if isin in seen_isins:
                     continue
                 seen_isins.add(isin)
 
-            rec = self._find_existing(isin, symbol, existing)
             if rec is None:
                 payload["status"] = "NEWLY_LISTED"
                 if self.dry_run:
@@ -276,6 +337,7 @@ class UniverseSyncService:
                     self.report.unchanged_securities += 1
 
         self.report.sync_duration_seconds = time.time() - start
+        self.report.meta_requests = meta_calls
         if self.report.insert_failures > 0:
             # Never report success/partial success when new listings were
             # dropped by the database. The scheduled workflow turns FAILED into

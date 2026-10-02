@@ -9,6 +9,22 @@ from app.repositories.stock_data_repository import StockDataRepository
 from app.services.market_data_service import MarketDataService
 
 
+def _stable_unique(symbols) -> List[str]:
+    """De-duplicate while preserving order.
+
+    A symbol that appears more than once in `daily_top_picks` would otherwise
+    be INSERTed (or DELETEd) more than once in the same reconcile.
+    """
+
+    seen = set()
+    result: List[str] = []
+    for symbol in symbols:
+        if symbol and symbol not in seen:
+            seen.add(symbol)
+            result.append(symbol)
+    return result
+
+
 class AlphaPortfolioService:
     """Service that reconciles the Alpha Portfolio with today's
     `Daily Top Picks`.
@@ -85,8 +101,8 @@ class AlphaPortfolioService:
         picks = self.daily_repo.get_country(country=market, limit=self.ALPHA_SIZE)
         picks_symbols = [r.get("symbol", "").upper() for r in picks]
 
-        to_add = [s for s in picks_symbols if s not in current_symbols]
-        to_remove = [s for s in current_symbols if s not in picks_symbols]
+        to_add = _stable_unique(s for s in picks_symbols if s not in current_symbols)
+        to_remove = _stable_unique(s for s in current_symbols if s not in picks_symbols)
 
         current_by_symbol = {
             (row.get("symbol") or "").upper(): row for row in current_rows
@@ -121,13 +137,24 @@ class AlphaPortfolioService:
             if entry_date is None:
                 entry_date = timestamp
 
+            # The keys below MUST match the real `public.alpha_portfolio`
+            # columns. Production stores the score breakdown in
+            # `overall_score`/`growth_score`/`quality_score`/
+            # `financial_strength_score`/`valuation_score`; it has no `score`
+            # and no `rank` column. Sending `score`/`rank` made every ADD fail
+            # with SQLSTATE 42703 ("column alpha_portfolio.score does not
+            # exist"), which aborted the whole reconcile before any holding
+            # could be added or removed, for both markets at once.
             new_rows[symbol] = {
                 "market": market,
                 "symbol": symbol,
                 "company_name": pick.get("company_name"),
                 "exchange": pick.get("exchange"),
-                "score": pick.get("overall_score"),
-                "rank": pick.get("rank"),
+                "overall_score": pick.get("overall_score"),
+                "growth_score": pick.get("growth_score"),
+                "quality_score": pick.get("quality_score"),
+                "financial_strength_score": pick.get("financial_strength_score"),
+                "valuation_score": pick.get("valuation_score"),
                 "entry_price": entry_price,
                 "entry_date": entry_date,
             }
@@ -136,9 +163,32 @@ class AlphaPortfolioService:
             if symbol not in new_rows:
                 continue
             row = new_rows[symbol]
-            inserted = self.alpha_repo.insert_one(row)
+
+            # A single holding must never be able to abort the whole
+            # reconcile. Previously any INSERT failure raised out of this loop,
+            # which skipped every remaining ADD and also every REMOVE, leaving
+            # the portfolio frozen at its previous contents while the scheduler
+            # logged a single line and carried on.
+            try:
+                inserted = self.alpha_repo.insert_one(row)
+            except Exception as exc:
+                self.logger.error(
+                    "Failed to add Alpha holding %s (%s); continuing with the "
+                    "rest of the batch: %s",
+                    symbol,
+                    market,
+                    exc,
+                )
+                continue
+
             if inserted is None:
-                raise RuntimeError(f"Failed to insert Alpha holding {symbol}")
+                self.logger.error(
+                    "Alpha holding %s (%s) was not written; continuing with the "
+                    "rest of the batch",
+                    symbol,
+                    market,
+                )
+                continue
 
             pick = picks_by_symbol[symbol]
             self.history_repo.insert_event(
@@ -153,14 +203,24 @@ class AlphaPortfolioService:
 
         for symbol in to_remove:
             row = current_by_symbol[symbol]
-            self.alpha_repo.delete(symbol, market=market)
+            try:
+                self.alpha_repo.delete(symbol, market=market)
+            except Exception as exc:
+                self.logger.error(
+                    "Failed to remove Alpha holding %s (%s); continuing: %s",
+                    symbol,
+                    market,
+                    exc,
+                )
+                continue
+
             self.history_repo.insert_event(
                 market=market,
                 symbol=symbol,
                 action=self.history_repo.ACTION_REMOVE,
                 reason="Removed from Daily Top Picks",
                 price=None,
-                score=row.get("score"),
+                score=row.get("overall_score"),
                 company_name=row.get("company_name"),
             )
 

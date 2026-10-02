@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
+from app.core.supabase import supabase
 from app.repositories.stock_repository import StockRepository
 from app.repositories.stock_data_repository import StockDataRepository
 
@@ -65,6 +66,78 @@ class MarketDataService:
 
         return self.refresh_stock(symbol, stock=stock)
 
+    def _yahoo_symbol_for(self, symbol: str, exchange: str) -> str:
+        yahoo_symbol = symbol
+
+        if "." not in yahoo_symbol:
+            if exchange == "NSE":
+                yahoo_symbol = f"{symbol}.NS"
+            elif exchange == "BSE":
+                yahoo_symbol = f"{symbol}.BO"
+
+        return yahoo_symbol
+
+    def refresh_quote(
+        self,
+        symbol: str,
+        stock: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Update only the cached quote for a symbol.
+
+        Metrics, score, eligibility and explanation are all derived from
+        fundamentals and price history, so a quote-only update leaves every
+        derived value exactly as the previous full refresh computed it. This
+        keeps prices current for the handful of symbols that can actually
+        enter a portfolio without re-downloading the full financial history.
+        """
+
+        symbol = symbol.upper()
+
+        if stock is None:
+            stock = self.stock_repo.get_by_symbol(symbol)
+
+        if stock is None:
+            raise SymbolNotFoundError(symbol)
+
+        exchange = (stock.get("exchange") or "").upper()
+        yahoo_symbol = self._yahoo_symbol_for(symbol, exchange)
+
+        quote = self.yahoo.get_quote(yahoo_symbol)
+
+        # Preserve whatever the previous full refresh stored. Only the quote and
+        # the freshness marker change; every derived value keeps the value the
+        # last full refresh computed for it.
+        payload = {
+            **self._stored_payload(symbol),
+            "quote_json": to_dict(quote),
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
+        self.stock_data_repo.save(symbol, payload)
+
+        return payload
+
+    def _stored_payload(self, symbol: str) -> Dict[str, Any]:
+        """Return the currently stored JSON columns for a symbol."""
+
+        result = (
+            supabase.table("stock_data")
+            .select(
+                "profile_json, quote_json, income_json, balance_json, "
+                "cashflow_json, metrics_json, ratios_json, score_json, "
+                "cache_status, eligibility_json, explanation_json, "
+                "financial_history_json, financials_json"
+            )
+            .eq("symbol", symbol.upper())
+            .limit(1)
+            .execute()
+        )
+
+        if not result.data:
+            return {}
+
+        return dict(result.data[0])
+
     def refresh_stock(
         self,
         symbol: str,
@@ -81,13 +154,7 @@ class MarketDataService:
 
         exchange = (stock.get("exchange") or "").upper()
 
-        yahoo_symbol = symbol
-
-        if "." not in yahoo_symbol:
-            if exchange == "NSE":
-                yahoo_symbol = f"{symbol}.NS"
-            elif exchange == "BSE":
-                yahoo_symbol = f"{symbol}.BO"
+        yahoo_symbol = self._yahoo_symbol_for(symbol, exchange)
 
         print("=" * 80)
         print(f"DB SYMBOL    : {symbol}")

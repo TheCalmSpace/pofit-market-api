@@ -1,5 +1,6 @@
 import logging
-from typing import Any, Dict, List
+import os
+from typing import Any, Dict, List, Optional
 
 from app.repositories.stock_repository import StockRepository
 from app.repositories.daily_top_picks_repository import (
@@ -12,6 +13,23 @@ from app.services.yahoo_service import (
     MarketDataUnavailableError,
     SymbolNotFoundError,
 )
+
+
+# Ranking the whole universe from live Yahoo data costs roughly 258 KB per
+# symbol. With 3,566 NSE and 8,456 US symbols and a 6 hour cache TTL that is
+# about 3 GB of Yahoo egress per daily Top Picks cycle, because the scheduled
+# ingestion job can only refresh 30 symbols every 4 hours (180 a day) and the
+# rest of the universe is therefore always stale at ranking time.
+#
+# Scores are derived from fundamentals and 5 year price history, which move
+# far more slowly than quotes, so a cached score is still a valid ranking
+# input. Ranking therefore runs off the cache and live Yahoo calls are capped:
+#   - symbols that have never been scored get a full refresh, so newly added
+#     listings still enter the ranking;
+#   - only the leading candidates get a cheap quote-only refresh, so anything
+#     that can actually enter the portfolio carries a current price.
+REFRESH_BUDGET = int(os.getenv("TOP_PICKS_REFRESH_BUDGET", "40"))
+QUOTE_REFRESH_BUDGET = int(os.getenv("TOP_PICKS_QUOTE_REFRESH_BUDGET", "40"))
 
 
 class DailyTopPicksService:
@@ -50,7 +68,14 @@ class DailyTopPicksService:
         self,
         country: str,
         top_n: int = 50,
+        refresh_budget: Optional[int] = None,
+        quote_refresh_budget: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
+
+        budget = REFRESH_BUDGET if refresh_budget is None else refresh_budget
+        quote_budget = (
+            QUOTE_REFRESH_BUDGET if quote_refresh_budget is None else quote_refresh_budget
+        )
 
         universe = self.stock_repo.list_all_by_country(country)
 
@@ -67,6 +92,8 @@ class DailyTopPicksService:
         stock_data = {s["symbol"]: s for s in stock_data_list}
 
         ranked: List[Dict[str, Any]] = []
+        refreshes_used = 0
+        refresh_failures = 0
 
         for stock in universe:
 
@@ -79,13 +106,41 @@ class DailyTopPicksService:
                     continue
 
                 cached = stock_data.get(symbol)
+                usable_cached_score = bool(
+                    cached
+                    and cached.get("score_json")
+                    and cached.get("eligibility_json")
+                )
 
                 if cached and self.market._is_cache_valid(cached):
                     payload = cached
+                elif usable_cached_score:
+                    # Rank on the cached score. The underlying fundamentals and
+                    # price history have not been re-downloaded, so this is the
+                    # same score a refresh would have recomputed.
+                    payload = cached
                 else:
-                    payload = self.market.refresh_stock(symbol, stock=meta)
-
-                print(f"{symbol} -> payload keys: {list(payload.keys())}")
+                    # Never scored: a refresh is the only way this symbol can
+                    # ever be ranked, so it takes priority within the budget.
+                    if refreshes_used >= budget:
+                        self.logger.info(
+                            "Skipping %s: no cached score and the Top Picks "
+                            "refresh budget (%d) is exhausted",
+                            symbol,
+                            budget,
+                        )
+                        continue
+                    refreshes_used += 1
+                    try:
+                        payload = self.market.refresh_stock(symbol, stock=meta)
+                    except (MarketDataUnavailableError, SymbolNotFoundError) as exc:
+                        refresh_failures += 1
+                        self.logger.warning(
+                            "Skipping %s: refresh failed during Top Picks: %s",
+                            symbol,
+                            exc,
+                        )
+                        continue
 
                 eligibility = payload.get("eligibility_json")
                 if not eligibility:
@@ -105,15 +160,11 @@ class DailyTopPicksService:
                 )
 
                 if not eligible:
-                    print(f"{symbol} -> NOT ELIGIBLE: {reason}")
                     continue
 
                 score = payload.get("score_json")
 
-                print(f"{symbol} -> score = {score}")
-
                 if not score:
-                    print(f"{symbol} -> NO SCORE")
                     continue
 
                 ranked.append(
@@ -137,7 +188,10 @@ class DailyTopPicksService:
                 continue
 
         print("=" * 80)
-        print(f"{country}: Ranked {len(ranked)}")
+        print(
+            f"{country}: Ranked {len(ranked)} "
+            f"(full refreshes={refreshes_used}/{budget}, failures={refresh_failures})"
+        )
         print("=" * 80)
 
         ranked.sort(
@@ -146,6 +200,26 @@ class DailyTopPicksService:
         )
 
         ranked = ranked[:top_n]
+
+        # Keep the leading candidates' quotes current so that the Alpha entry
+        # price and the served portfolio do not depend on a stale cache. This is
+        # a quote-only update: it does not touch metrics or the score.
+        quotes_used = 0
+        for stock in ranked[:quote_budget]:
+            symbol = stock["symbol"]
+            meta = stock_meta.get(symbol)
+            if meta is None:
+                continue
+            try:
+                self.market.refresh_quote(symbol, stock=meta)
+                quotes_used += 1
+            except Exception as exc:
+                self.logger.warning("Quote refresh failed for %s: %s", symbol, exc)
+
+        print(
+            f"{country}: refreshed {quotes_used}/{min(quote_budget, len(ranked))} "
+            "leading candidate quotes"
+        )
 
         rows: List[Dict[str, Any]] = []
 
