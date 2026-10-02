@@ -9,6 +9,7 @@ from app.services.daily_top_picks_service import DailyTopPicksService
 from app.services.alpha_portfolio_service import AlphaPortfolioService
 from app.services.performance_service import PerformanceService
 from app.services.stock_data_ingestion_service import StockDataIngestionService
+from app.services.universe_sync_service import UniverseSyncService
 
 
 scheduler = BackgroundScheduler(
@@ -21,6 +22,16 @@ logger = logging.getLogger(__name__)
 INGESTION_HOUR = int(os.getenv("STOCK_DATA_INGESTION_HOUR", "6"))
 INGESTION_MINUTE = int(os.getenv("STOCK_DATA_INGESTION_MINUTE", "0"))
 INGESTION_INTERVAL_HOURS = int(os.getenv("STOCK_DATA_INGESTION_INTERVAL_HOURS", "4"))
+
+# The NSE universe sync discovers new listings and must finish before the
+# 06:00 IST stock-data ingestion, so the intended order is
+#   NSE Universe Sync -> Stock Data Ingestion -> India Top Picks -> Alpha.
+# It is deliberately 05:30 rather than 06:00: the ingestion job's first run
+# is pinned to 06:00 IST, so a 06:00 sync would run both concurrently instead
+# of sequentially and would put the sync's NSE calls in parallel with
+# ingestion's Yahoo calls.
+UNIVERSE_SYNC_HOUR = int(os.getenv("NSE_UNIVERSE_SYNC_HOUR", "5"))
+UNIVERSE_SYNC_MINUTE = int(os.getenv("NSE_UNIVERSE_SYNC_MINUTE", "30"))
 
 
 def generate_india():
@@ -86,11 +97,39 @@ def ingest_stock_data():
 		logger.exception("Stock data ingestion failed: %s", exc)
 
 
+def sync_nse_universe():
+	print("=" * 80)
+	print("POFIT Scheduler")
+	print("Running NSE universe sync...")
+	print("=" * 80)
+	try:
+		report = UniverseSyncService().run()
+		print(f"Universe sync complete: {report.summary()}")
+		if report.final_status == "FAILED":
+			logger.error("NSE universe sync finished with status FAILED: %s", report.summary())
+	except Exception as exc:
+		# A failed sync must never propagate: APScheduler would log it as a
+		# job error, and the ingestion and Top Picks jobs scheduled after it
+		# must still run on their normal cadence.
+		logger.exception("NSE universe sync failed: %s", exc)
+
+
 def start_scheduler():
 	global _scheduler_started
 
 	if scheduler.running:
 		return scheduler
+
+	scheduler.add_job(
+		sync_nse_universe,
+		trigger="cron",
+		hour=UNIVERSE_SYNC_HOUR,
+		minute=UNIVERSE_SYNC_MINUTE,
+		id="nse_universe_sync",
+		replace_existing=True,
+		coalesce=True,
+		max_instances=1,
+	)
 
 	scheduler.add_job(
 		ingest_stock_data,
@@ -132,6 +171,7 @@ def start_scheduler():
 
 	print("=" * 80)
 	print("POFIT Scheduler Started")
+	print(f"NSE Universe Sync      : {UNIVERSE_SYNC_HOUR:02d}:{UNIVERSE_SYNC_MINUTE:02d} IST")
 	print(f"Stock Data Ingestion: every {INGESTION_INTERVAL_HOURS}h starting {INGESTION_HOUR:02d}:{INGESTION_MINUTE:02d} IST")
 	print("India Top Picks       : 08:00 IST")
 	print("USA Top Picks         : 09:30 IST")
