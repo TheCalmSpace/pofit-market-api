@@ -59,7 +59,8 @@ class TestSchedulerLifecycle:
 class TestSchedulerJobs:
     @patch("app.scheduler.DailyTopPicksService")
     @patch("app.scheduler.AlphaPortfolioService")
-    def test_generate_india_calls_services(self, mock_alpha, mock_daily):
+    @patch("app.scheduler.PerformanceService")
+    def test_generate_india_calls_services(self, mock_perf, mock_alpha, mock_daily):
         mock_daily_instance = MagicMock()
         mock_daily_instance.generate_country.return_value = ["pick1", "pick2"]
         mock_daily.return_value = mock_daily_instance
@@ -75,7 +76,8 @@ class TestSchedulerJobs:
 
     @patch("app.scheduler.DailyTopPicksService")
     @patch("app.scheduler.AlphaPortfolioService")
-    def test_generate_usa_calls_services(self, mock_alpha, mock_daily):
+    @patch("app.scheduler.PerformanceService")
+    def test_generate_usa_calls_services(self, mock_perf, mock_alpha, mock_daily):
         mock_daily_instance = MagicMock()
         mock_daily_instance.generate_country.return_value = ["pick1"]
         mock_daily.return_value = mock_daily_instance
@@ -91,7 +93,8 @@ class TestSchedulerJobs:
 
     @patch("app.scheduler.DailyTopPicksService")
     @patch("app.scheduler.AlphaPortfolioService")
-    def test_generate_india_handles_alpha_exception(self, mock_alpha, mock_daily, caplog):
+    @patch("app.scheduler.PerformanceService")
+    def test_generate_india_handles_alpha_exception(self, mock_perf, mock_alpha, mock_daily, caplog):
         mock_daily_instance = MagicMock()
         mock_daily_instance.generate_country.return_value = ["pick1"]
         mock_daily.return_value = mock_daily_instance
@@ -106,7 +109,8 @@ class TestSchedulerJobs:
 
     @patch("app.scheduler.DailyTopPicksService")
     @patch("app.scheduler.AlphaPortfolioService")
-    def test_generate_usa_handles_alpha_exception(self, mock_alpha, mock_daily, caplog):
+    @patch("app.scheduler.PerformanceService")
+    def test_generate_usa_handles_alpha_exception(self, mock_perf, mock_alpha, mock_daily, caplog):
         mock_daily_instance = MagicMock()
         mock_daily_instance.generate_country.return_value = ["pick1"]
         mock_daily.return_value = mock_daily_instance
@@ -122,6 +126,15 @@ class TestSchedulerJobs:
 
 class TestSchedulerIntegration:
     def test_lifespan_startup_and_shutdown(self):
+        """The lifespan starts and stops the scheduler and registers jobs.
+
+        This test used to run the live BackgroundScheduler with real job
+        targets. A job that fired executed the genuine generation code
+        against the configured Supabase database, which wrote test rows
+        into the production `portfolio_performance` table. `tests/conftest.py`
+        now neutralises job execution, so this test verifies registration
+        and lifecycle without touching a database.
+        """
         from app.main import lifespan
         from fastapi import FastAPI
 
@@ -134,12 +147,107 @@ class TestSchedulerIntegration:
                 assert _scheduler_started
                 assert _scheduler.running
 
+                # Registration is preserved even though execution is
+                # suppressed during tests.
+                job_ids = {job.id for job in _scheduler.get_jobs()}
+                assert {
+                    "india_top_picks",
+                    "usa_top_picks",
+                    "stock_data_ingestion",
+                    "nse_universe_sync",
+                } <= job_ids
+
             from app.scheduler import _scheduler, _scheduler_started
             assert not _scheduler.running
             assert not _scheduler_started
 
         import asyncio
         asyncio.run(test_lifespan())
+
+    def test_lifespan_does_not_run_real_jobs(self, scheduler_guard):
+        """Real job targets must not be invoked by any test."""
+        assert scheduler_guard.EXECUTED_TARGETS == []
+        assert set(scheduler_guard.JOB_TARGETS) == {
+            "generate_india",
+            "generate_usa",
+            "ingest_stock_data",
+            "sync_nse_universe",
+        }
+
+
+class TestJobExecutionIsolation:
+    def test_scheduled_job_never_executes_during_tests(self):
+        """A job registered on the live scheduler must not be dispatched.
+
+        This is the direct proof of the isolation guarantee: the scheduler
+        is genuinely running and the job is genuinely due, yet the callable
+        is never invoked. Before the guard, a job firing here would run the
+        real generation code against the configured Supabase database.
+        """
+        from app.scheduler import scheduler, start_scheduler
+
+        start_scheduler()
+        assert scheduler.running
+
+        calls = []
+
+        def _probe():
+            calls.append(1)
+
+        job = scheduler.add_job(
+            _probe,
+            trigger="interval",
+            seconds=1,
+            id="test_isolation_probe",
+            replace_existing=True,
+        )
+        assert job.id in {j.id for j in scheduler.get_jobs()}
+
+        try:
+            time.sleep(2.5)
+        finally:
+            try:
+                scheduler.remove_job("test_isolation_probe")
+            except Exception:
+                pass
+
+        assert calls == [], (
+            "a scheduled job executed during tests; the isolation guard "
+            "is not working"
+        )
+
+    def test_scheduler_executor_is_guarded(self):
+        from app.scheduler import scheduler
+
+        executors = getattr(scheduler, "_executors", {})
+        assert "default" in executors
+        assert type(executors["default"]).__name__ == "_NoopExecutor"
+
+    def test_production_write_guard_blocks_inserts(self, probing_writes):
+        """A production insert attempted during tests must be refused."""
+        from app.core.supabase import supabase
+
+        with probing_writes():
+            table = supabase.table("portfolio_performance")
+            with pytest.raises(AssertionError) as excinfo:
+                table.insert({"market": "IN"}).execute()
+
+        assert "refusing to run" in str(excinfo.value)
+
+    def test_production_write_guard_blocks_updates_and_deletes(
+        self, probing_writes
+    ):
+        from app.core.supabase import supabase
+
+        with probing_writes():
+            for method, args in (
+                ("update", ({"market": "IN"},)),
+                ("delete", ()),
+                ("upsert", ({"market": "IN"},)),
+            ):
+                table = supabase.table("portfolio_performance")
+                with pytest.raises(AssertionError):
+                    getattr(table, method)(*args).execute()
 
 
 class TestStockDataIngestionJob:
@@ -365,7 +473,8 @@ class TestExistingSchedulesUnchanged:
 
     @patch("app.scheduler.DailyTopPicksService")
     @patch("app.scheduler.AlphaPortfolioService")
-    def test_alpha_generation_still_runs_for_both_markets(self, mock_alpha, mock_daily):
+    @patch("app.scheduler.PerformanceService")
+    def test_alpha_generation_still_runs_for_both_markets(self, mock_perf, mock_alpha, mock_daily):
         """Alpha reconcile still runs inside both Top Picks jobs."""
         mock_daily.return_value.generate_country.return_value = ["p1"]
         mock_alpha.return_value.reconcile_market.return_value = 4
