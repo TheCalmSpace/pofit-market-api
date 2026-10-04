@@ -78,7 +78,7 @@ class AlphaHistoryRepository:
 			.select("*")
 			.eq("market", (market or "").upper())
 			.lte("performed_at", as_of)
-			.order("performed_at", asc=True)
+			.order("performed_at")
 			.execute()
 		)
 
