@@ -60,6 +60,25 @@ EXECUTED_TARGETS = []
 # Mutating Supabase operations attempted while tests were active.
 BLOCKED_WRITES = []
 
+# Outbound market-data calls attempted while tests were active. A test that
+# reaches a real provider is both a correctness problem and an egress problem:
+# the daily market-data budget is a production invariant, and a test run that
+# calls Yahoo spends it.
+BLOCKED_PROVIDER_CALLS = []
+
+# Yahoo methods that reach the network. Construction and the pure helpers
+# (`_with_transient_retries`, `_is_transient_provider_error`, ...) are left
+# usable so the existing unit tests of retry and error-classification logic
+# keep working. Patching the `YahooService` name in a service module replaces
+# the class entirely, so tests that mock the provider are unaffected.
+_NETWORK_METHODS = (
+    "get_quote",
+    "get_historical_prices",
+    "get_financials",
+    "get_financial_history",
+    "search_symbols",
+)
+
 # Depth of deliberate guard probes. A probe verifies the guard works and
 # must not count as an accidental write attempt.
 _PROBE_DEPTH = 0
@@ -98,6 +117,7 @@ def scheduler_guard():
 		SUBMITTED_JOBS = SUBMITTED_JOBS
 		JOB_TARGETS = JOB_TARGETS
 		BLOCKED_WRITES = BLOCKED_WRITES
+		BLOCKED_PROVIDER_CALLS = BLOCKED_PROVIDER_CALLS
 
 	return _GuardView()
 
@@ -247,3 +267,46 @@ def _block_production_supabase_writes():
 			"tests attempted %d production Supabase write(s): %s"
 			% (len(BLOCKED_WRITES), sorted(set(BLOCKED_WRITES)))
 		)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _block_external_market_data_calls():
+	"""Refuse real Yahoo calls for the whole test session.
+
+	`PerformanceService` is contractually database-only, and the benchmark
+	quote refresh is the one new path allowed to reach a provider. Both are
+	supposed to be reached through mocks in tests, so any test that actually
+	performs a network call is a test bug.
+
+	This matters beyond correctness. Production market-data egress is capped at
+	50 MB/day, and a test run that calls Yahoo spends that budget from the
+	developer's machine rather than proving the production path is bounded.
+
+	Only the outbound methods are blocked, so `YahooService` can still be
+	constructed and its pure helpers still exercised.
+	"""
+	from app.services.yahoo_service import YahooService
+
+	originals = {}
+
+	def make_blocked(name):
+		def blocked(*args, **kwargs):
+			BLOCKED_PROVIDER_CALLS.append(name)
+			raise AssertionError(
+				"test guard: refusing to call YahooService.%s(). Mock the "
+				"provider in the test instead; a real call spends the "
+				"production market-data egress budget." % name
+			)
+
+		return blocked
+
+	for name in _NETWORK_METHODS:
+		originals[name] = getattr(YahooService, name, None)
+		if originals[name] is not None:
+			setattr(YahooService, name, make_blocked(name))
+
+	yield
+
+	for name, real in originals.items():
+		if real is not None:
+			setattr(YahooService, name, real)

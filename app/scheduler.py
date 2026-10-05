@@ -7,9 +7,11 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.services.daily_top_picks_service import DailyTopPicksService
 from app.services.alpha_portfolio_service import AlphaPortfolioService
+from app.services.market_data_service import MarketDataService
 from app.services.performance_service import PerformanceService
 from app.services.stock_data_ingestion_service import StockDataIngestionService
 from app.services.universe_sync_service import UniverseSyncService
+from app.utils.symbol import MARKET_BENCHMARKS
 
 
 scheduler = BackgroundScheduler(
@@ -34,6 +36,41 @@ UNIVERSE_SYNC_HOUR = int(os.getenv("NSE_UNIVERSE_SYNC_HOUR", "5"))
 UNIVERSE_SYNC_MINUTE = int(os.getenv("NSE_UNIVERSE_SYNC_MINUTE", "30"))
 
 
+def _refresh_benchmark_quote(market: str):
+	"""Refresh the cached quote for `market`'s benchmark index.
+
+	Runs once per market, immediately before that market's performance
+	snapshot. Placing it here means the benchmark and the alpha holdings are
+	both priced from the same trading session, so the resulting alpha is a
+	like-for-like comparison rather than two windows a session apart.
+
+	Cost: exactly one quote call per market per day (measured at roughly
+	30 KB for ^NSEI and 34 KB for ^IXIC). No new scheduler and no new job is
+	registered - this rides the Top Picks jobs that already run. No historical
+	download is requested, and the benchmark is never added to the `stocks`
+	universe, so the bounded ingestion job cannot pick it up and start
+	refreshing it every 4 hours.
+
+	A failure here must not abort the market run: the snapshot still has to be
+	taken, and PerformanceService carries the benchmark NAV forward unchanged
+	and reports it as missing, which is the pre-existing behaviour.
+	"""
+	benchmark_symbol = MARKET_BENCHMARKS.get((market or "").upper())
+
+	if not benchmark_symbol:
+		return
+
+	try:
+		MarketDataService().refresh_benchmark_quote(benchmark_symbol)
+		print(f"Benchmark quote refreshed: {benchmark_symbol} ({market})")
+	except Exception:
+		logger.exception(
+			"Benchmark quote refresh failed for %s (%s)",
+			benchmark_symbol,
+			market,
+		)
+
+
 def generate_india():
 	print("=" * 80)
 	print("POFIT Scheduler")
@@ -50,6 +87,8 @@ def generate_india():
 		print(f"Alpha portfolio updated; holdings={count} (IN)")
 	except Exception:
 		logger.exception("Alpha portfolio update failed for IN")
+
+	_refresh_benchmark_quote("IN")
 
 	try:
 		perf_service = PerformanceService()
@@ -75,6 +114,8 @@ def generate_usa():
 		print(f"Alpha portfolio updated; holdings={count} (US)")
 	except Exception:
 		logger.exception("Alpha portfolio update failed for US")
+
+	_refresh_benchmark_quote("US")
 
 	try:
 		perf_service = PerformanceService()

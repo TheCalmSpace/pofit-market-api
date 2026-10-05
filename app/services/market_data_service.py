@@ -12,9 +12,15 @@ from app.services.explanation_service import ExplanationService
 from app.services.eligibility_service import EligibilityService
 
 from app.utils.model_utils import to_dict
+from app.utils.symbol import BENCHMARK_SYMBOLS
 
 
 CACHE_TTL = timedelta(hours=6)
+
+# A benchmark row holds a quote and nothing else. "partial" is the existing
+# cache_status value for a row whose quote is usable but whose fundamentals are
+# not, which is exactly true for an index, so no new status is introduced.
+BENCHMARK_CACHE_STATUS = "partial"
 
 
 class MarketDataService:
@@ -110,6 +116,48 @@ class MarketDataService:
         payload = {
             **self._stored_payload(symbol),
             "quote_json": to_dict(quote),
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
+        self.stock_data_repo.save(symbol, payload)
+
+        return payload
+
+    def refresh_benchmark_quote(self, symbol: str) -> Dict[str, Any]:
+        """Refresh the cached quote for a benchmark index.
+
+        A benchmark index is not a stock, so `refresh_quote` cannot be used:
+        that method requires a `stocks` row to resolve the exchange, and a
+        benchmark deliberately has none. `refresh_stock` must never be pointed
+        at an index either, because it would re-download financials and five
+        years of price history on a schedule that never retires.
+
+        This is therefore a quote-only path that stores exactly what the
+        performance calculation needs - `current_price` and `previous_close`
+        inside `quote_json`, plus `updated_at` as the freshness marker - and
+        nothing else. Eligibility, metrics, score, explanation and every
+        financial column are left untouched: an index has no fundamentals, so
+        writing any value for them would be fabricating data.
+
+        EGRESS: one `get_quote` call, measured at roughly 30 KB for ^NSEI and
+        34 KB for ^IXIC. No historical download, no per-stock request, and no
+        call at all outside a scheduled market snapshot.
+
+        Raises SymbolNotFoundError for anything that is not a known benchmark,
+        so this can never be used to write a partial row for a real stock.
+        """
+        symbol = (symbol or "").strip().upper()
+
+        if symbol not in BENCHMARK_SYMBOLS:
+            raise SymbolNotFoundError(symbol)
+
+        # The benchmark symbol is already a Yahoo index ticker. There is no
+        # `stocks` row to map an exchange from, so it is passed through as-is.
+        quote = self.yahoo.get_quote(symbol)
+
+        payload = {
+            "quote_json": to_dict(quote),
+            "cache_status": BENCHMARK_CACHE_STATUS,
             "updated_at": datetime.utcnow().isoformat(),
         }
 

@@ -9,6 +9,7 @@ from app.repositories.portfolio_performance_repository import (
 	PortfolioPerformanceRepository,
 )
 from app.repositories.stock_data_repository import StockDataRepository
+from app.utils.symbol import MARKET_BENCHMARKS
 
 # Bound at import time so `isinstance` checks keep working in tests that
 # patch the module-level `datetime`.
@@ -66,12 +67,20 @@ class PerformanceService:
 	existing `stock_data.quote_json` ingestion cache, which is already
 	populated by the bounded stock ingestion job. Adding a provider here
 	would raise network egress, so it is intentionally absent.
+
+	The benchmark index is read from that same cache and from no other
+	source. Its row is written by the quote-only benchmark refresh that runs
+	once per market immediately before this snapshot; the holdings' rows are
+	written by the bounded ingestion and Top Picks quote refreshes. This
+	service only ever reads, so a missing benchmark row leaves the benchmark
+	NAV unchanged and reports `benchmark_status="missing"` rather than
+	reaching outside the database for a price.
 	"""
 
-	BENCHMARKS = {
-		"IN": "^NSEI",
-		"US": "^IXIC",
-	}
+	# Shared with the benchmark quote refresh so both sides of the cache agree
+	# on which index each market is measured against. This is a plain mapping:
+	# it carries no provider, so the egress contract above still holds.
+	BENCHMARKS = MARKET_BENCHMARKS
 
 	PERIOD_DAYS = {
 		"1m": 30,
@@ -177,6 +186,16 @@ class PerformanceService:
 		]
 		symbols = [s for s in symbols if s]
 
+		# The benchmark must be requested as part of this same cache read.
+		# Reading it from a cache built out of the holdings alone can never
+		# return a benchmark row, so the benchmark NAV would stay frozen at its
+		# baseline and the benchmark return would report 0.0 forever.
+		# `get_quote_data_many` de-duplicates and batches, so adding one symbol
+		# to an existing query does not add a request.
+		benchmark_symbol = self.BENCHMARKS.get(market.upper())
+		if benchmark_symbol:
+			symbols.append(benchmark_symbol.upper())
+
 		cache = {
 			(str(row.get("symbol") or "")).upper(): row
 			for row in self.stock_data_repo.get_quote_data_many(symbols)
@@ -201,7 +220,6 @@ class PerformanceService:
 			else 0.0
 		)
 
-		benchmark_symbol = self.BENCHMARKS.get(market.upper())
 		benchmark_daily_return = None
 
 		if benchmark_symbol:
