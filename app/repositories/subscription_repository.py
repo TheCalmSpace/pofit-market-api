@@ -9,7 +9,7 @@ class SubscriptionRepository:
     def get_by_user(self, user_id: str) -> Optional[Dict[str, Any]]:
         result = (
             supabase.table("subscriptions")
-            .select("*")
+            .select("user_id, plan, status, is_lifetime, expires_at, started_at")
             .eq("user_id", user_id)
             .limit(1)
             .execute()

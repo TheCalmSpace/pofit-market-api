@@ -103,9 +103,6 @@ class TestAuthenticatedProductRoutes:
             "/historical/ABC",
             "/score/ABC",
             "/radar/stocks",
-            "/alpha/india",
-            "/alpha/history",
-            "/alpha/performance",
             "/subscription/user-1",
         ],
     )
@@ -114,6 +111,19 @@ class TestAuthenticatedProductRoutes:
         if path == "/daily-top-picks/generate":
             response = self._client().post(path)
         assert response.status_code == 401
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/alpha/india",
+            "/alpha/history",
+            "/alpha/performance",
+        ],
+    )
+    def test_anonymous_alpha_routes_are_public(self, path):
+        """Alpha routes are intentionally public - no authentication required."""
+        response = self._client().get(path)
+        assert response.status_code == 200
 
     def test_authenticated_search_reaches_handler(self):
         user = SimpleNamespace(id="user-1", email="user@example.com")
@@ -227,7 +237,10 @@ class TestAuthenticatedProductRoutes:
         service.market = MagicMock()
         service.alpha_filter = MagicMock()
         service.repository = MagicMock()
+        service.alpha_repo = MagicMock()
         service.logger = MagicMock()
+        service.alpha_repo.get_all.return_value = []
+        service.repository.get_country.return_value = []
         service.stock_repo.list_all_by_country.return_value = [
             {"symbol": f"S{index:02d}", "company_name": "Company", "exchange": "NSE"}
             for index in range(50)

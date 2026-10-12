@@ -103,6 +103,7 @@ class AlphaPortfolioService:
 
         to_add = _stable_unique(s for s in picks_symbols if s not in current_symbols)
         to_remove = _stable_unique(s for s in current_symbols if s not in picks_symbols)
+        to_keep = _stable_unique(s for s in picks_symbols if s in current_symbols)
 
         current_by_symbol = {
             (row.get("symbol") or "").upper(): row for row in current_rows
@@ -158,6 +159,45 @@ class AlphaPortfolioService:
                 "entry_price": entry_price,
                 "entry_date": entry_date,
             }
+
+        for symbol in to_keep:
+            if symbol not in new_rows:
+                continue
+
+            existing = current_by_symbol.get(symbol)
+            row = new_rows[symbol]
+            if not existing:
+                continue
+
+            changed_fields = [
+                key for key in (
+                    "market",
+                    "symbol",
+                    "company_name",
+                    "exchange",
+                    "overall_score",
+                    "growth_score",
+                    "quality_score",
+                    "financial_strength_score",
+                    "valuation_score",
+                    "entry_price",
+                    "entry_date",
+                )
+                if existing.get(key) != row.get(key)
+            ]
+            if not changed_fields:
+                continue
+
+            try:
+                self.alpha_repo.update(row)
+            except Exception as exc:
+                self.logger.error(
+                    "Failed to update Alpha holding %s (%s); continuing: %s",
+                    symbol,
+                    market,
+                    exc,
+                )
+                continue
 
         for symbol in to_add:
             if symbol not in new_rows:

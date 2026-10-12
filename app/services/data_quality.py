@@ -107,16 +107,21 @@ class DataQualityAssessor:
         if overall is None:
             return {"status": "insufficient", "reason": "overall_score is null"}
 
-        updated = cls._parse_timestamp(cached.get("updated_at"))
-        if updated is None:
+        # Prefer score_calculated_at for score freshness; fall back to updated_at
+        # for backward compatibility with rows written before score_calculated_at existed.
+        score_updated = cls._parse_timestamp(cached.get("score_calculated_at"))
+        if score_updated is None:
+            score_updated = cls._parse_timestamp(cached.get("updated_at"))
+
+        if score_updated is None:
             return {
                 "status": "partial",
-                "reason": "score exists but updated_at is missing",
+                "reason": "score exists but timestamp is missing",
                 "score": overall,
                 "model_version": score.get("model_version"),
             }
 
-        age = datetime.utcnow() - updated
+        age = datetime.utcnow() - score_updated
         if age > cls.CACHE_TTL:
             return {
                 "status": "stale",
@@ -124,7 +129,7 @@ class DataQualityAssessor:
                 "age_hours": round(age.total_seconds() / 3600, 1),
                 "score": overall,
                 "model_version": score.get("model_version"),
-                "data_as_of": cached.get("updated_at"),
+                "data_as_of": cached.get("score_calculated_at") or cached.get("updated_at"),
             }
 
         quote_quality = cls.assess_quote(cached)
@@ -134,7 +139,7 @@ class DataQualityAssessor:
                 "reason": f"Underlying quote data is {quote_quality['status']}: {quote_quality.get('reason')}",
                 "score": overall,
                 "model_version": score.get("model_version"),
-                "data_as_of": cached.get("updated_at"),
+                "data_as_of": cached.get("score_calculated_at") or cached.get("updated_at"),
                 "underlying_quality": quote_quality,
             }
 
@@ -145,7 +150,7 @@ class DataQualityAssessor:
                 "reason": f"Underlying financial data is {financials_quality['status']}: {financials_quality.get('reason')}",
                 "score": overall,
                 "model_version": score.get("model_version"),
-                "data_as_of": cached.get("updated_at"),
+                "data_as_of": cached.get("score_calculated_at") or cached.get("updated_at"),
                 "underlying_quality": financials_quality,
             }
 
@@ -153,7 +158,7 @@ class DataQualityAssessor:
             "status": "fresh",
             "score": overall,
             "model_version": score.get("model_version"),
-            "data_as_of": cached.get("updated_at"),
+            "data_as_of": cached.get("score_calculated_at") or cached.get("updated_at"),
         }
 
     @staticmethod

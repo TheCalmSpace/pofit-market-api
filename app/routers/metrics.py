@@ -13,13 +13,13 @@ from app.services.metrics_service import MetricsService
 from app.services.yahoo_service import (
     MarketDataUnavailableError,
     SymbolNotFoundError,
-    YahooService,
 )
+from app.services.yahoo_egress import create_yahoo_service
 from app.utils.symbol import resolve_yahoo_symbol
 
 router = APIRouter(dependencies=[Depends(require_authenticated_user)])
 
-yahoo = YahooService()
+yahoo = create_yahoo_service()
 stock_repo = StockRepository()
 
 

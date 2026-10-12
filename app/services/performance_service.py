@@ -9,6 +9,7 @@ from app.repositories.portfolio_performance_repository import (
 	PortfolioPerformanceRepository,
 )
 from app.repositories.stock_data_repository import StockDataRepository
+from app.services.trading_calendar import TradingCalendar, get_calendar
 from app.utils.symbol import MARKET_BENCHMARKS
 
 # Bound at import time so `isinstance` checks keep working in tests that
@@ -81,11 +82,20 @@ class PerformanceService:
 	# on which index each market is measured against. This is a plain mapping:
 	# it carries no provider, so the egress contract above still holds.
 	BENCHMARKS = MARKET_BENCHMARKS
+	# Reliable reconstruction boundary: first trading day with verifiable data.
+	# This is NOT the product launch date; it is the earliest date with
+	# complete, validated price and membership data.
+	RELIABLE_INCEPTION_START = {
+		"IN": date(2026, 9, 14),
+		"US": date(2026, 9, 14),
+	}
 
-	PERIOD_DAYS = {
-		"1m": 30,
-		"6m": 180,
-		"1y": 365,
+	# Period definitions in trading days (not calendar days)
+	PERIOD_TRADING_DAYS = {
+		"1m": 21,    # ~1 month of trading days
+		"3m": 63,    # ~3 months of trading days
+		"6m": 126,   # ~6 months of trading days
+		"1y": 252,   # ~1 year of trading days
 	}
 
 	FY_START = date(2025, 4, 1)
@@ -96,9 +106,20 @@ class PerformanceService:
 		self.alpha_history_repo = AlphaHistoryRepository()
 		self.performance_repo = PortfolioPerformanceRepository()
 		self.stock_data_repo = StockDataRepository()
+		self._calendars: Dict[str, TradingCalendar] = {}
+
+	def _get_calendar(self, market: str) -> TradingCalendar:
+		"""Get or create the trading calendar for a market."""
+		market = (market or "").upper()
+		if not hasattr(self, "_calendars") or self._calendars is None:
+			self._calendars = {}
+		if market not in self._calendars:
+			self._calendars[market] = get_calendar(market)
+		return self._calendars[market]
 
 
 	def snapshot_market(self, market: str) -> Optional[Dict[str, Any]]:
+		market = (market or "").upper()
 		now = datetime.utcnow()
 		as_of = now.isoformat()
 		snapshot_date = now.date().isoformat()
@@ -137,20 +158,40 @@ class PerformanceService:
 			# return on top of the first, so the value carries forward.
 			diagnostics["nav_step"] = "already_recorded_for_date"
 		else:
-			diagnostics["nav_step"] = "daily_return"
-			portfolio_daily_return, benchmark_daily_return = (
-				self._daily_returns_from_cache(
-					rows, market, snapshot_date, diagnostics
+			# Get calendar if available for this market
+			try:
+				calendar = self._get_calendar(market)
+				today = now.date()
+				if not calendar.is_trading_day(today):
+					diagnostics["nav_step"] = "non_trading_day"
+				else:
+					diagnostics["nav_step"] = "daily_return"
+					portfolio_daily_return, benchmark_daily_return = (
+						self._daily_returns_from_cache(
+							rows, market, snapshot_date, diagnostics
+						)
+					)
+					portfolio_nav = prev_nav * (1 + portfolio_daily_return)
+					if benchmark_daily_return is None:
+						benchmark_nav = prev_bench_nav
+					else:
+						benchmark_nav = prev_bench_nav * (1 + benchmark_daily_return)
+			except ValueError:
+				# Unsupported market - proceed without calendar validation
+				diagnostics["nav_step"] = "daily_return"
+				portfolio_daily_return, benchmark_daily_return = (
+					self._daily_returns_from_cache(
+						rows, market, snapshot_date, diagnostics
+					)
 				)
-			)
-			portfolio_nav = prev_nav * (1 + portfolio_daily_return)
-			if benchmark_daily_return is None:
-				benchmark_nav = prev_bench_nav
-			else:
-				benchmark_nav = prev_bench_nav * (1 + benchmark_daily_return)
+				portfolio_nav = prev_nav * (1 + portfolio_daily_return)
+				if benchmark_daily_return is None:
+					benchmark_nav = prev_bench_nav
+				else:
+					benchmark_nav = prev_bench_nav * (1 + benchmark_daily_return)
 
 		payload = {
-			"market": (market or "").upper(),
+			"market": market,
 			"date": snapshot_date,
 			"as_of": as_of,
 			"period": "INCEPTION",
@@ -178,7 +219,7 @@ class PerformanceService:
 		a holding without usable cached data is reported in
 		`diagnostics["missing_prices"]` and contributes no return.
 		"""
-		yesterday = self._get_yesterday_trading_date()
+		yesterday = self._get_yesterday_trading_date(market)
 		active_yesterday = self._get_active_symbols_as_of(market, yesterday)
 
 		symbols = [
@@ -299,22 +340,49 @@ class PerformanceService:
 		period_key = (period or "").lower()
 		benchmark_symbol = self.BENCHMARKS.get(market)
 		now = datetime.utcnow()
+		calendar = self._get_calendar(market)
 
+		# Determine start and end dates based on period
 		if period_key == "since-inception":
-			date_start = None
+			# Use the first trading day on or after the reliable boundary
+			boundary = self.RELIABLE_INCEPTION_START.get(market)
+			if boundary is None:
+				return self._not_available(market, period_key, benchmark_symbol, now,
+					f"Unknown market {market}")
+			date_start = calendar.next_trading_day(boundary - timedelta(days=1))
+			if date_start is None:
+				return self._not_available(market, period_key, benchmark_symbol, now,
+					"No trading day found after reliable boundary")
+			# For since-inception, date_end is None to include all available data
+			# (matching the original behavior for backward compatibility)
 			date_end = None
 		elif period_key == "fy2025-26":
-			date_start = self.FY_START
-			date_end = self.FY_END
-		elif period_key in self.PERIOD_DAYS:
-			date_start = now.date() - timedelta(days=self.PERIOD_DAYS[period_key])
-			date_end = now.date()
+			date_start = calendar.next_trading_day(self.FY_START - timedelta(days=1))
+			date_end = calendar.previous_trading_day(self.FY_END + timedelta(days=1))
+		elif period_key in self.PERIOD_TRADING_DAYS:
+			# Count back trading days from the most recent completed trading day
+			today = now.date()
+			latest_trading_day = calendar.previous_trading_day(today + timedelta(days=1))
+			if latest_trading_day is None:
+				return self._not_available(market, period_key, benchmark_symbol, now,
+					"No recent trading day found")
+			# Get N trading days back
+			trading_days = calendar.trading_days(
+				date(1900, 1, 1),  # far past
+				latest_trading_day
+			)
+			required_days = self.PERIOD_TRADING_DAYS[period_key]
+			if len(trading_days) < required_days:
+				return self._not_available(market, period_key, benchmark_symbol, now,
+					f"Insufficient trading history for {period_key} period")
+			date_start = trading_days[-required_days]
+			date_end = latest_trading_day
 		else:
 			return {
 				"market": market,
 				"period": period_key,
 				"status": "error",
-				"detail": f"Invalid period: {period_key}. Use 1m, 6m, 1y, since-inception, or fy2025-26.",
+				"detail": f"Invalid period: {period_key}. Use 1m, 3m, 6m, 1y, since-inception, or fy2025-26.",
 				"benchmark": None,
 				"portfolio_return": None,
 				"benchmark_return": None,
@@ -373,13 +441,12 @@ class PerformanceService:
 				float(benchmark_nav_end) / float(benchmark_nav_start)
 			) - 1.0
 		except (TypeError, ValueError, ZeroDivisionError):
-			benchmark_return = None
+			return self._not_available(
+				market, period_key, benchmark_symbol, now,
+				"Invalid benchmark return data",
+			)
 
-		excess_return = (
-			portfolio_return - benchmark_return
-			if benchmark_return is not None
-			else None
-		)
+		excess_return = portfolio_return - benchmark_return
 
 		return {
 			"market": market,
@@ -391,15 +458,22 @@ class PerformanceService:
 			"excess_return": excess_return,
 			"as_of": end.get("as_of"),
 			"holdings_count": end.get("holdings_count", 0),
+			"date_start": date_start.isoformat(),
+			"date_end": date_end.isoformat() if date_end else None,
 		}
 
-	def _get_yesterday_trading_date(self) -> date:
+	def _get_yesterday_trading_date(self, market: str) -> date:
 		now = datetime.utcnow()
-		for offset in range(1, 8):
-			candidate = (now - timedelta(days=offset)).date()
-			if candidate.weekday() < 5:
-				return candidate
-		return (now - timedelta(days=1)).date()
+		try:
+			calendar = self._get_calendar(market)
+			return calendar.previous_trading_day(now.date()) or (now - timedelta(days=1)).date()
+		except ValueError:
+			# Unsupported market - fall back to simple weekday check
+			for offset in range(1, 8):
+				candidate = (now - timedelta(days=offset)).date()
+				if candidate.weekday() < 5:
+					return candidate
+			return (now - timedelta(days=1)).date()
 
 	def _get_active_symbols_as_of(
 		self, market: str, as_of: date

@@ -79,23 +79,20 @@ class TestDataQualityAssessor:
 
 
 class TestMetricsCrashFix:
-    @patch("app.routers.metrics.YahooService")
-    def test_metrics_handles_symbol_not_found(self, mock_yahoo_cls):
-        mock_yahoo = MagicMock()
-        mock_yahoo.get_financials.side_effect = Exception("SymbolNotFoundError")
-        mock_yahoo_cls.return_value = mock_yahoo
+    @patch("app.routers.metrics.yahoo")
+    def test_metrics_handles_symbol_not_found(self, mock_yahoo):
+        from app.services.yahoo_service import SymbolNotFoundError
+        mock_yahoo.get_financials.side_effect = SymbolNotFoundError("RELIANCE")
 
         response = client.get("/metrics/RELIANCE", headers=AUTH_HEADERS)
         assert response.status_code == 200
         data = response.json()
         assert data["data_status"] == "insufficient_data"
 
-    @patch("app.routers.metrics.YahooService")
-    def test_metrics_handles_missing_financials(self, mock_yahoo_cls):
-        mock_yahoo = MagicMock()
+    @patch("app.routers.metrics.yahoo")
+    def test_metrics_handles_missing_financials(self, mock_yahoo):
         mock_yahoo.get_financials.return_value = MagicMock(data_status="unavailable")
         mock_yahoo.get_financial_history.return_value = MagicMock(data_status="unavailable")
-        mock_yahoo_cls.return_value = mock_yahoo
 
         response = client.get("/metrics/RELIANCE", headers=AUTH_HEADERS)
         assert response.status_code == 200

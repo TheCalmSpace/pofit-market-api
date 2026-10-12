@@ -1,4 +1,5 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+from datetime import datetime, timezone
 
 from app.core.supabase import supabase
 
@@ -20,9 +21,15 @@ class DailyTopPicksRepository:
         )
 
         if rows:
+            # Add generated_at timestamp to each row
+            timestamp = datetime.now(timezone.utc).isoformat()
+            rows_with_timestamp = [
+                {**row, "generated_at": timestamp}
+                for row in rows
+            ]
             (
                 supabase.table(self.TABLE)
-                .insert(rows)
+                .insert(rows_with_timestamp)
                 .execute()
             )
 
@@ -34,7 +41,7 @@ class DailyTopPicksRepository:
 
         result = (
             supabase.table(self.TABLE)
-            .select("*")
+            .select("country, symbol, company_name, exchange, overall_score, growth_score, quality_score, financial_strength_score, valuation_score, rank, generated_at")
             .eq("country", country)
             .order("rank")
             .limit(limit)
@@ -42,3 +49,19 @@ class DailyTopPicksRepository:
         )
 
         return result.data or []
+
+    def get_latest_generated_at(self, country: str) -> Optional[str]:
+        """Return the generated_at timestamp of the latest entry for a country."""
+        result = (
+            supabase.table(self.TABLE)
+            .select("generated_at")
+            .eq("country", country)
+            .order("generated_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+
+        if not result.data:
+            return None
+
+        return result.data[0].get("generated_at")

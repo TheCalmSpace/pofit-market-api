@@ -348,7 +348,7 @@ class TestCachedDailyReturn:
 		]
 
 		with patch("app.services.performance_service.datetime") as mock_dt:
-			mock_dt.utcnow.return_value = datetime(2026, 1, 18, 12, 0, 0)
+			mock_dt.utcnow.return_value = datetime(2026, 1, 19, 12, 0, 0)
 			result = performance_service.snapshot_market("IN")
 
 		# A row from an earlier session must not be chained, otherwise

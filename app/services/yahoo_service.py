@@ -4,6 +4,7 @@ from datetime import date
 from typing import Any, Dict, List, Optional, Sequence, Set
 
 import yfinance as yf
+from curl_cffi.requests import Session
 
 from app.models import (
     FinancialHistoryAnnualItem,
@@ -100,9 +101,16 @@ class YahooService:
     )
     _EPS_ROWS = ("Diluted EPS", "Basic EPS", "DilutedEPS", "BasicEPS")
 
+    def __init__(self, session: Optional[Session] = None, historical_session: Optional[Session] = None) -> None:
+        # `session` is used for all yf.Ticker calls (quote, financials, history).
+        # `historical_session` is kept for backward compatibility; if `session` is
+        # provided it takes precedence for historical prices as well.
+        self._session = session
+        self._historical_session = historical_session or session
+
     def get_quote(self, symbol: str) -> QuoteResponse:
         normalized_symbol = self._normalize_symbol(symbol)
-        ticker = yf.Ticker(normalized_symbol)
+        ticker = yf.Ticker(normalized_symbol, session=self._session)
 
         info = self._get_info(ticker=ticker, symbol=normalized_symbol)
         fast_info = self._get_fast_info(ticker=ticker)
@@ -210,7 +218,7 @@ class YahooService:
         normalized_period = self._normalize_period(period)
         normalized_interval = self._normalize_interval(interval)
 
-        ticker = yf.Ticker(normalized_symbol)
+        ticker = yf.Ticker(normalized_symbol, session=self._session)
 
         try:
             history = self._with_transient_retries(
@@ -263,7 +271,7 @@ class YahooService:
 
     def get_financials(self, symbol: str) -> FinancialsResponse:
         normalized_symbol = self._normalize_symbol(symbol)
-        ticker = yf.Ticker(normalized_symbol)
+        ticker = yf.Ticker(normalized_symbol, session=self._session)
 
         info = self._get_info(
     ticker=ticker,
@@ -412,7 +420,7 @@ class YahooService:
 
     def get_financial_history(self, symbol: str) -> FinancialHistoryResponse:
         normalized_symbol = self._normalize_symbol(symbol)
-        ticker = yf.Ticker(normalized_symbol)
+        ticker = yf.Ticker(normalized_symbol, session=self._session)
 
         info = self._get_info(ticker=ticker, symbol=normalized_symbol)
         if self._is_invalid_symbol_info(info):

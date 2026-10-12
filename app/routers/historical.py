@@ -7,8 +7,8 @@ from app.services import (
     InvalidMarketDataRequestError,
     MarketDataUnavailableError,
     SymbolNotFoundError,
-    YahooService,
 )
+from app.services.yahoo_egress import create_yahoo_service
 from app.utils.symbol import resolve_yahoo_symbol
 
 router = APIRouter(
@@ -16,7 +16,7 @@ router = APIRouter(
     tags=["Historical"],
     dependencies=[Depends(require_authenticated_user)],
 )
-yahoo_service = YahooService()
+yahoo_service = create_yahoo_service()
 stock_repo = StockRepository()
 
 

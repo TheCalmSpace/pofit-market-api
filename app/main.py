@@ -10,6 +10,7 @@ from app.routers import (
     financial_history,
     financials,
     historical,
+    internal,
     metrics,
     quote,
     radar,
@@ -18,7 +19,7 @@ from app.routers import (
     subscription,
 )
 
-from app.scheduler import start_scheduler
+from app.scheduler import start_scheduler, shutdown_scheduler
 
 
 API_VERSION = "1.0.0"
@@ -27,7 +28,10 @@ API_VERSION = "1.0.0"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     start_scheduler()
-    yield
+    try:
+        yield
+    finally:
+        shutdown_scheduler()
 
 
 def create_app() -> FastAPI:
@@ -57,6 +61,10 @@ def create_app() -> FastAPI:
 
     application.include_router(
         financial_history.router
+    )
+
+    application.include_router(
+        internal.router
     )
 
     application.include_router(

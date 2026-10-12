@@ -1,3 +1,5 @@
+import os
+import hmac
 from typing import Any, Dict, Optional
 
 from fastapi import HTTPException, Request, status
@@ -47,6 +49,46 @@ def require_authenticated_user(request: Request) -> Dict[str, Any]:
             detail="Authentication required.",
         )
     return user
+
+
+def require_internal_api_key(request: Request) -> None:
+    """Validate X-Internal-API-Key header for service-to-service ingestion.
+
+    Fails closed if the expected secret is not configured.
+    Uses constant-time comparison to avoid timing attacks.
+    """
+    expected = os.getenv("POFIT_INTERNAL_API_KEY")
+    if not expected:
+        # Fail closed: if secret is not configured, reject all requests
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Internal API authentication not configured.",
+        )
+
+    provided = request.headers.get("X-Internal-API-Key")
+    if not provided:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing internal API key.",
+        )
+
+    if not hmac.compare_digest(provided, expected):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid internal API key.",
+        )
+
+
+def require_internal_or_user_auth(request: Request) -> Dict[str, Any]:
+    """Allow either internal API key or user JWT for internal endpoints."""
+    provided = request.headers.get("X-Internal-API-Key")
+    expected = os.getenv("POFIT_INTERNAL_API_KEY")
+
+    if expected and provided and hmac.compare_digest(provided, expected):
+        return {"type": "internal"}
+
+    # Fall back to user authentication
+    return require_authenticated_user(request)
 
 
 def require_premium(user_id: str):

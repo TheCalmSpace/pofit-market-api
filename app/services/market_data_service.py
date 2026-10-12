@@ -6,6 +6,7 @@ from app.repositories.stock_repository import StockRepository
 from app.repositories.stock_data_repository import StockDataRepository
 
 from app.services.yahoo_service import YahooService, SymbolNotFoundError
+from app.services.yahoo_egress import create_yahoo_service
 from app.services.metrics_service import MetricsService
 from app.services.score_service import ScoreService
 from app.services.explanation_service import ExplanationService
@@ -29,7 +30,7 @@ class MarketDataService:
         self.stock_repo = StockRepository()
         self.stock_data_repo = StockDataRepository()
 
-        self.yahoo = YahooService()
+        self.yahoo = create_yahoo_service()
         self.metrics = MetricsService()
         self.score = ScoreService()
         self.explanation = ExplanationService()
@@ -113,11 +114,16 @@ class MarketDataService:
         # Preserve whatever the previous full refresh stored. Only the quote and
         # the freshness marker change; every derived value keeps the value the
         # last full refresh computed for it.
+        stored = self._stored_payload(symbol)
         payload = {
-            **self._stored_payload(symbol),
+            **stored,
             "quote_json": to_dict(quote),
             "updated_at": datetime.utcnow().isoformat(),
         }
+        # Do NOT update score_calculated_at - quote refresh must not make
+        # an old score appear newly calculated.
+        if "score_calculated_at" in stored:
+            payload["score_calculated_at"] = stored["score_calculated_at"]
 
         self.stock_data_repo.save(symbol, payload)
 
@@ -235,10 +241,12 @@ class MarketDataService:
         metrics = None
         score = None
         explanation = None
+        score_calculated_at = None
         if required_financial_data_available:
             metrics = self.metrics.build_metrics(history, financials)
             score = self.score.build_score(metrics)
             explanation = self.explanation.build_explanation(score)
+            score_calculated_at = datetime.utcnow().isoformat()
 
         payload = {
             "quote_json": to_dict(quote),
@@ -251,6 +259,8 @@ class MarketDataService:
             "cache_status": "fresh" if required_financial_data_available else "partial",
             "updated_at": datetime.utcnow().isoformat(),
         }
+        if score_calculated_at:
+            payload["score_calculated_at"] = score_calculated_at
 
         self.stock_data_repo.save(
             symbol,

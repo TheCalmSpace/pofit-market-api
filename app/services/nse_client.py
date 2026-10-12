@@ -11,6 +11,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from app.services.yahoo_egress import BoundedNSESession, create_bounded_nse_session
+
 logger = logging.getLogger(__name__)
 
 NSE_HOME = "https://www.nseindia.com"
@@ -42,9 +44,15 @@ class NSERateLimitError(NSError):
     pass
 
 
+class NSEEgressLimitError(NSError):
+    """Raised when NSE request would exceed the shared project egress budget."""
+    pass
+
+
 class NSEClient:
-    def __init__(self) -> None:
-        self._session = requests.Session()
+    def __init__(self, session: Optional[BoundedNSESession] = None) -> None:
+        # Use bounded session if provided, otherwise create one
+        self._session = session or create_bounded_nse_session()
         self._session.headers.update(HEADERS)
         retry = Retry(
             total=RETRY_TOTAL,
@@ -85,6 +93,9 @@ class NSEClient:
         except requests.exceptions.Timeout as exc:
             raise NSError(f"NSE request timeout: {exc}") from exc
         except requests.exceptions.RequestException as exc:
+            # Check if it's an egress limit error from our bounded session
+            if "egress budget" in str(exc).lower() or "budget exhausted" in str(exc).lower():
+                raise NSEEgressLimitError(str(exc)) from exc
             raise NSError(f"NSE request failed: {exc}") from exc
 
     def fetch_sec_list(self) -> List[Dict[str, str]]:

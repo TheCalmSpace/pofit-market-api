@@ -115,7 +115,7 @@ def alpha_performance_report(
 	market: str = Query(..., description="Market code: IN or US"),
 	period: str = Query(
 		...,
-		description="Period: 1m, 6m, 1y, since-inception, or fy2025-26",
+		description="Period: 1m, 3m, 6m, 1y, since-inception, or fy2025-26",
 	),
 ):
 	service = PerformanceService()

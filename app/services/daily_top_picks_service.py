@@ -1,12 +1,13 @@
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from app.repositories.stock_repository import StockRepository
 from app.repositories.daily_top_picks_repository import (
     DailyTopPicksRepository,
 )
 from app.repositories.stock_data_repository import StockDataRepository
+from app.repositories.alpha_portfolio_repository import AlphaPortfolioRepository
 from app.services.market_data_service import MarketDataService
 from app.services.alpha_filter_service import AlphaFilterService
 from app.services.yahoo_service import (
@@ -50,6 +51,7 @@ class DailyTopPicksService:
 
         self.stock_repo = StockRepository()
         self.stock_data_repo = StockDataRepository()
+        self.alpha_repo = AlphaPortfolioRepository()
 
         self.repository = DailyTopPicksRepository()
 
@@ -91,11 +93,23 @@ class DailyTopPicksService:
         stock_meta = {s["symbol"]: s for s in stock_meta_list}
         stock_data = {s["symbol"]: s for s in stock_data_list}
 
+        # Priority tiers for refresh budget:
+        # Tier 1: Current Alpha holdings for this market
+        # Tier 2: Previous day's top-50 picks (plausible replacements)
+        # Tier 3: Remaining universe (rotated by score age)
+        current_holdings = self._get_current_holdings(country)
+        prior_top_picks = self._get_prior_top_picks(country)
+
         ranked: List[Dict[str, Any]] = []
         refreshes_used = 0
         refresh_failures = 0
 
-        for stock in universe:
+        # Build ordered universe: priority tiers first, then remaining by score age
+        ordered_universe = self._order_universe_for_refresh(
+            universe, current_holdings, prior_top_picks, stock_data
+        )
+
+        for stock in ordered_universe:
 
             symbol = stock["symbol"]
 
@@ -249,6 +263,57 @@ class DailyTopPicksService:
         )
 
         return rows
+
+    def _get_current_holdings(self, country: str) -> Set[str]:
+        """Get current Alpha holdings symbols for the market."""
+        holdings = self.alpha_repo.get_all(country)
+        return {h.get("symbol", "").upper() for h in holdings if h.get("symbol")}
+
+    def _get_prior_top_picks(self, country: str) -> Set[str]:
+        """Get previous day's top-50 picks for the market."""
+        picks = self.repository.get_country(country=country, limit=50)
+        return {p.get("symbol", "").upper() for p in picks if p.get("symbol")}
+
+    def _order_universe_for_refresh(
+        self,
+        universe: List[Dict[str, Any]],
+        current_holdings: Set[str],
+        prior_top_picks: Set[str],
+        stock_data: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Order universe: Tier 1 (holdings), Tier 2 (prior picks), Tier 3 (oldest score first)."""
+        tier1 = []
+        tier2 = []
+        tier3 = []
+
+        for stock in universe:
+            symbol = stock["symbol"].upper()
+            if symbol in current_holdings:
+                tier1.append(stock)
+            elif symbol in prior_top_picks:
+                tier2.append(stock)
+            else:
+                tier3.append(stock)
+
+        # Tier 3: sort by score age (oldest score_calculated_at first, then missing score)
+        def score_age_key(stock: Dict[str, Any]):
+            symbol = stock["symbol"].upper()
+            cached = stock_data.get(symbol)
+            if cached and cached.get("score_calculated_at"):
+                try:
+                    return (0, cached["score_calculated_at"])
+                except Exception:
+                    return (1, "")
+            elif cached and cached.get("updated_at"):
+                try:
+                    return (1, cached["updated_at"])
+                except Exception:
+                    return (2, "")
+            return (2, "")
+
+        tier3.sort(key=score_age_key)
+
+        return tier1 + tier2 + tier3
 
     def get_country(
         self,

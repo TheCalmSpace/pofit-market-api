@@ -43,6 +43,7 @@ def build_service(n_symbols, cached, refresh_side_effect=None):
     service.market = MagicMock()
     service.alpha_filter = MagicMock()
     service.repository = MagicMock()
+    service.alpha_repo = MagicMock()
     service.logger = MagicMock()
 
     symbols = [f"S{i:03d}" for i in range(n_symbols)]
@@ -56,6 +57,9 @@ def build_service(n_symbols, cached, refresh_side_effect=None):
     service.stock_data_repo.get_many_for_top_picks.return_value = [
         {"symbol": row["symbol"], **row} for row in cached
     ]
+
+    service.alpha_repo.get_all.return_value = []
+    service.repository.get_country.return_value = []
 
     service.market._is_cache_valid.return_value = False
     if refresh_side_effect is None:
