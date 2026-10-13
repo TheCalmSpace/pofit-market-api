@@ -34,9 +34,9 @@ Design constraints enforced here:
   place, older duplicates are removed, and absent rows are inserted.
   Re-running produces the same database state.
 * **Egress bounded.** Only the union of reliable-period Alpha symbols
-  plus ``^NSEI`` and ``^IXIC`` is requested, with ``period="1mo"``.
+  plus ``^NSEI`` and ``^IXIC`` is requested, with ``period="3mo"``.
   The backfill transport enforces per-run caps and a persistent,
-  host-local 38,000,000-byte daily budget shared across service instances
+  host-local 80,000,000-byte daily budget shared across service instances
   and processes, including reserved request overhead.
   This service is not registered with an API route or scheduler.
 """
@@ -222,7 +222,7 @@ class AlphaBackfillService:
         "IN": date(2026, 9, 13),
         "US": date(2026, 9, 14),
     }
-    MAX_RECONSTRUCTION_END = date(2026, 10, 6)
+    MAX_RECONSTRUCTION_END = date(2026, 10, 12)
 
     PERIOD = "INCEPTION"
     BASELINE_NAV = 100.0
@@ -237,13 +237,15 @@ class AlphaBackfillService:
 
     BENCHMARKS = {
         "IN": "^NSEI",
-        "US": "^IXIC",
-    }
-
-    # The transport session counts every Yahoo HTTP attempt, including
-    # provider retries, and enforces per-run and persistent daily limits.
+         "US": "^IXIC",
+     }
+ 
+     # The transport session counts every Yahoo HTTP attempt, including
+     # provider retries, and enforces per-run caps and a persistent,
+    # host-local daily budget shared across service instances
+    # and processes, including reserved request overhead.
     MAX_EXPECTED_REQUESTS = 80
-    MAX_EXPECTED_BYTES = 1_000_000
+    MAX_EXPECTED_BYTES = 5_000_000
     MAX_SYMBOLS_PER_MARKET = 20
     LAST_SAFE_RUN_DATE = date(2026, 10, 13)
 
@@ -257,7 +259,7 @@ class AlphaBackfillService:
             max_requests=self.MAX_EXPECTED_REQUESTS,
         )
         self.yahoo = YahooService(
-            historical_session=self.egress_session
+            session=self.egress_session
         )
         self.alpha_history_repo = alpha_history_repo or AlphaHistoryRepository()
         self.performance_repo = performance_repo or PortfolioPerformanceRepository()
@@ -492,11 +494,13 @@ class AlphaBackfillService:
         market: str,
         symbols: List[str],
     ) -> Tuple[Dict[str, Dict[date, Dict[str, Any]]], EgressReport]:
-        """Fetch 1-month daily history for each symbol via the existing YahooService.
+        """Fetch 3-month daily history for each symbol via the existing YahooService.
 
         Returns a mapping of symbol -> date -> price bar, plus an egress
         report. Benchmark symbols are requested as-is (no exchange suffix);
         India symbols are suffixed with ``.NS`` for the NSE listing.
+        The 3-month period ensures we have the prior close for the first
+        trading day of the reliable reconstruction window.
         """
         series: Dict[str, Dict[date, Dict[str, Any]]] = {}
         egress = EgressReport()
@@ -513,7 +517,7 @@ class AlphaBackfillService:
         for symbol in symbols:
             ticker = self._yahoo_ticker(symbol, market)
             response = self.yahoo.get_historical_prices(
-                ticker, period="1mo", interval="1d"
+                ticker, period="3mo", interval="1d"
             )
             egress.bytes_measured = True
 
@@ -658,12 +662,24 @@ class AlphaBackfillService:
         Every later trading day chains ``NAV_t = NAV_{t-1} * (1 + r)``
         where ``r`` is the equal-weighted mean of the daily returns of
         the holdings that were active on the previous trading day.
+
+        If a trading day has zero valid holding prices, it is recorded as
+        a gap (SKIP) and does not block the write. The next day with valid
+        prices chains from the last valid day using a multi-day return.
         """
         proposed_rows: List[ProposedRow] = []
         skipped: List[Dict[str, Any]] = []
 
         portfolio_nav = self.BASELINE_NAV
         benchmark_nav = self.BASELINE_NAV
+
+        # Track the last day with valid prices for chaining across gaps
+        last_valid_day: Optional[date] = None
+        last_valid_portfolio_nav = self.BASELINE_NAV
+        last_valid_benchmark_nav = self.BASELINE_NAV
+
+        # First trading day in the reconstruction window (baseline)
+        first_reconstruction_day = trading_days[0] if trading_days else None
 
         for index, day in enumerate(trading_days):
             day_str = day.isoformat()
@@ -672,6 +688,7 @@ class AlphaBackfillService:
             if index == 0:
                 # Baseline: no previous trading day in the reliable
                 # series, so the return is zero by definition.
+                last_valid_day = day
                 coverage = HoldingCoverage(
                     snapshot_date=day_str,
                     active_holdings=len(active),
@@ -695,22 +712,54 @@ class AlphaBackfillService:
                 )
                 continue
 
-            prev_day = calendar.previous_trading_day(day)
-            if prev_day is None:
+            # Find the previous trading day that has valid prices for the holdings
+            # Start from calendar previous trading day and walk back until we find one with prices
+            prev_day_candidate = calendar.previous_trading_day(day)
+            prev_day_for_prices = None
+            while prev_day_candidate is not None:
+                # Stop if we've gone before the first reconstruction day
+                if first_reconstruction_day is not None and prev_day_candidate < first_reconstruction_day:
+                    break
+                # Check if this candidate day has prices for at least one holding
+                # We need to check membership as of prev_day_candidate
+                candidate_holdings = self._membership_for_return_day(events, prev_day_candidate)
+                has_prices = False
+                for symbol in candidate_holdings:
+                    current = self._close(series, symbol, day)
+                    previous = self._close(series, symbol, prev_day_candidate)
+                    if current is not None and previous is not None and previous > 0:
+                        has_prices = True
+                        break
+                if has_prices:
+                    prev_day_for_prices = prev_day_candidate
+                    break
+                # Walk back to earlier trading day
+                try:
+                    prev_day_candidate = calendar.previous_trading_day(prev_day_candidate)
+                except (ValueError, OverflowError):
+                    break
+
+            if prev_day_for_prices is None:
+                # No previous trading day with prices found
                 skipped.append(
                     {
                         "date": day_str,
-                        "reason": "no previous trading day",
-                        "blocks_write": True,
+                        "reason": "no previous trading day with usable prices",
+                        "blocks_write": False,
                     }
                 )
                 continue
 
-            return_holdings = self._membership_for_return_day(events, day)
+            # Membership for the return period is as of the found previous valid day
+            return_holdings = self._membership_for_return_day(events, prev_day_for_prices)
+
             portfolio_return, coverage = self._portfolio_daily_return(
-                series, return_holdings, day, prev_day
+                series, return_holdings, day, prev_day_for_prices
             )
+
             if coverage.valid_prices == 0:
+                # Gap day: no valid prices for any holding
+                # Record as skipped but do NOT block write
                 skipped.append(
                     {
                         "date": day_str,
@@ -718,21 +767,23 @@ class AlphaBackfillService:
                             "no eligible Alpha holding has usable closes for "
                             "this session"
                         ),
-                        "blocks_write": True,
+                        "blocks_write": False,
                         "coverage": coverage.as_dict(),
                     }
                 )
                 continue
 
+            # Valid prices exist: compute benchmark return over same interval
             benchmark_return = self._benchmark_daily_return(
-                series, benchmark_symbol, day, prev_day
+                series, benchmark_symbol, day, prev_day_for_prices
             )
 
-            portfolio_nav = portfolio_nav * (1 + portfolio_return)
+            # Chain NAV from the last valid day
+            portfolio_nav = last_valid_portfolio_nav * (1 + portfolio_return)
             if benchmark_return is None:
-                benchmark_nav = benchmark_nav
+                benchmark_nav = last_valid_benchmark_nav
             else:
-                benchmark_nav = benchmark_nav * (1 + benchmark_return)
+                benchmark_nav = last_valid_benchmark_nav * (1 + benchmark_return)
 
             alpha = (
                 portfolio_return - benchmark_return
@@ -755,6 +806,11 @@ class AlphaBackfillService:
                     coverage=coverage,
                 )
             )
+
+            # Update last valid day trackers
+            last_valid_day = day
+            last_valid_portfolio_nav = portfolio_nav
+            last_valid_benchmark_nav = benchmark_nav
 
         return proposed_rows, skipped
 

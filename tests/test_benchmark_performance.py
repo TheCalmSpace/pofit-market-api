@@ -376,26 +376,34 @@ class TestBenchmarkReadFromCache:
 		mock_alpha_history_repo,
 		mock_perf_repo,
 	):
-		mock_perf_repo.get_for_period.return_value = [
-			{
-				"as_of": "2026-01-01T00:00:00",
-				"portfolio_nav": 100.0,
-				"benchmark_nav": 100.0,
-				"holdings_count": 1,
-			},
-			{
-				"as_of": "2026-06-01T00:00:00",
-				"portfolio_nav": 110.0,
-				"benchmark_nav": 95.0,
-				"holdings_count": 1,
-			},
-		]
+		# Mock datetime to 2026-09-21 (Monday) for deterministic calendar
+		with patch("app.services.performance_service.datetime") as mock_dt:
+			mock_dt.utcnow.return_value = datetime(2026, 9, 21, 12, 0, 0)
+			mock_dt.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+			
+			# For 1m (21 trading days) from 2026-09-21:
+			# latest_trading_day = 2026-09-21
+			# requested_start = 21 trading days before = 2026-08-24 (Monday)
+			mock_perf_repo.get_for_period.return_value = [
+				{
+					"as_of": "2026-08-24T00:00:00",
+					"portfolio_nav": 100.0,
+					"benchmark_nav": 100.0,
+					"holdings_count": 1,
+				},
+				{
+					"as_of": "2026-09-21T00:00:00",
+					"portfolio_nav": 110.0,
+					"benchmark_nav": 95.0,
+					"holdings_count": 1,
+				},
+			]
 
-		report = performance_service.report_performance("IN", "1m")
+			report = performance_service.report_performance("IN", "1m")
 
-		assert report["portfolio_return"] == pytest.approx(0.10)
-		assert report["benchmark_return"] == pytest.approx(-0.05)
-		assert report["excess_return"] == pytest.approx(0.15)
+			assert report["portfolio_return"] == pytest.approx(0.10)
+			assert report["benchmark_return"] == pytest.approx(-0.05)
+			assert report["excess_return"] == pytest.approx(0.15)
 
 
 class TestMissingBenchmarkStaysLocal:

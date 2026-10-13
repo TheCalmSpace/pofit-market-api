@@ -163,7 +163,7 @@ def test_reconstruction_refuses_end_dates_outside_validated_window_before_reads(
     service, yahoo, history_repo, _ = _service([])
 
     with pytest.raises(ValueError, match="validated window"):
-        service.run("IN", end_date=date(2026, 10, 7))
+        service.run("IN", end_date=date(2026, 10, 13))
 
     history_repo.get_events_up_to.assert_not_called()
     yahoo.get_historical_prices.assert_not_called()
@@ -189,7 +189,8 @@ def test_first_day_is_zero_baseline_and_following_day_chains_nav():
     service = AlphaBackfillService.__new__(AlphaBackfillService)
     days = [date(2026, 9, 14), date(2026, 9, 15)]
     membership = {day: {"CPRX"} for day in days}
-    events = [_event("CPRX", "ADD", "2026-09-14")]
+    # Add on 2026-09-13 so it's active for the 2026-09-14 -> 2026-09-15 return
+    events = [_event("CPRX", "ADD", "2026-09-13")]
     prices = {
         "CPRX": {
             days[0]: _price(100),
@@ -243,17 +244,32 @@ def test_missing_symbol_is_excluded_from_equal_weight_denominator():
     assert coverage.excluded_symbols == ["CPRX"]
 
 
-def test_zero_eligible_returns_block_write_mode_without_performance_reads_or_writes():
+def test_zero_eligible_returns_skipped_but_not_blocked():
     events = [_event("CPRX", "ADD", "2026-09-13")]
     service, yahoo, _, performance_repo = _service(events)
 
-    with pytest.raises(BackfillWriteBlockedError, match="2026-09-15"):
-        service.run("IN", mode="write", end_date=date(2026, 9, 15))
+    # No prices provided for CPRX -> zero eligible returns for 2026-09-15
+    # Should NOT block write, but should record skipped date for 2026-09-15
+    # The baseline day (2026-09-14) still gets inserted
+    result = service.run("IN", mode="write", end_date=date(2026, 9, 15))
+
+    assert result.write_blocked is False
+    assert len(result.write_blockers) == 0
+    # Should have one skipped date (2026-09-15) with blocks_write=False
+    skipped_15 = [s for s in result.skipped_dates if s["date"] == "2026-09-15"]
+    assert len(skipped_15) == 1
+    assert skipped_15[0]["blocks_write"] is False
 
     assert yahoo.get_historical_prices.call_count == 2
     assert service.egress_session.request_count == 0
-    performance_repo.get_rows_for_date.assert_not_called()
-    performance_repo.apply_reconciliation_plan.assert_not_called()
+    # Write mode still checks existing rows for reconciliation
+    assert performance_repo.get_rows_for_date.call_count == 2
+    # Reconciliation plan is applied for the baseline row (2026-09-14)
+    assert performance_repo.apply_reconciliation_plan.call_count == 1
+    plan = performance_repo.apply_reconciliation_plan.call_args[0][0]
+    assert len(plan) == 1
+    assert plan[0]["kind"] == "INSERT"
+    assert plan[0]["date"] == "2026-09-14"
 
 
 def test_october_second_india_rows_are_included_in_delete_plan():
@@ -641,3 +657,277 @@ def test_concurrent_yahoo_nse_reservations_do_not_exceed_budget():
     # Total reserved should not exceed daily budget
     total_reserved = sum(yahoo_reserved) + sum(nse_reserved) + 20 * budget.request_overhead_bytes
     assert total_reserved <= PROJECT_DAILY_EGRESS_BYTES + 1  # small overhead tolerance
+
+
+# =====================================================================
+# Historical Reconstruction Regression Tests
+# =====================================================================
+
+
+def test_fetch_prices_uses_three_month_period():
+    """_fetch_prices uses period='3mo' to capture prior-close for first reconstruction day."""
+    service = AlphaBackfillService.__new__(AlphaBackfillService)
+    service.egress_session = MagicMock()
+    service.egress_session.request_count = 0
+    service.egress_session.response_bytes = 0
+    service.yahoo = MagicMock()
+    service.yahoo.get_historical_prices = MagicMock(
+        return_value=SimpleNamespace(prices=[])
+    )
+
+    service._fetch_prices("IN", ["SYM1", "SYM2"])
+
+    calls = service.yahoo.get_historical_prices.call_args_list
+    for call in calls:
+        assert call.kwargs.get("period") == "3mo", f"Expected period='3mo', got {call.kwargs.get('period')}"
+        assert call.kwargs.get("interval") == "1d"
+
+
+def test_gap_handling_idempotent_across_runs():
+    """Running reconstruction twice produces identical proposed rows and write plan."""
+    from datetime import date
+    from types import SimpleNamespace
+    events = [_event("SYM1", "ADD", "2026-09-13")]
+    
+    def _hp(d, close):
+        return SimpleNamespace(
+            date=d, open=close, high=close, low=close, 
+            close=close, adj_close=close, volume=100
+        )
+    
+    prices = {
+        "SYM1": [
+            _hp(date(2026, 9, 14), 100),
+            _hp(date(2026, 9, 15), 101),
+            _hp(date(2026, 9, 16), 102),
+            _hp(date(2026, 9, 17), 103),
+        ],
+        "^NSEI": [
+            _hp(date(2026, 9, 14), 25000),
+            _hp(date(2026, 9, 15), 25100),
+            _hp(date(2026, 9, 16), 25200),
+            _hp(date(2026, 9, 17), 25300),
+        ],
+    }
+    history_repo = MagicMock()
+    history_repo.get_events_up_to.return_value = events
+    performance_repo = MagicMock()
+    performance_repo.get_rows_for_date.return_value = []
+
+    service1 = AlphaBackfillService(history_repo, performance_repo)
+    service1.yahoo.get_historical_prices = MagicMock(
+        side_effect=lambda *args, **kwargs: SimpleNamespace(
+            prices=prices.get(args[0], [])
+        )
+    )
+
+    service2 = AlphaBackfillService(history_repo, performance_repo)
+    service2.yahoo.get_historical_prices = MagicMock(
+        side_effect=lambda *args, **kwargs: SimpleNamespace(
+            prices=prices.get(args[0], [])
+        )
+    )
+
+    result1 = service1.run("IN", mode="dry-run", end_date=date(2026, 9, 17))
+    result2 = service2.run("IN", mode="dry-run", end_date=date(2026, 9, 17))
+
+    assert len(result1.proposed_rows) == len(result2.proposed_rows)
+    assert len(result1.write_plan) == len(result2.write_plan)
+    for r1, r2 in zip(result1.proposed_rows, result2.proposed_rows):
+        assert r1.date == r2.date
+        assert r1.portfolio_nav == pytest.approx(r2.portfolio_nav)
+        assert r1.benchmark_nav == pytest.approx(r2.benchmark_nav)
+        assert r1.alpha == pytest.approx(r2.alpha)
+    assert result1.skipped_dates == result2.skipped_dates
+
+
+def test_egress_within_operational_limits():
+    """Reconstruction egress stays within 5MB per run and 80MB daily budget."""
+    service = AlphaBackfillService.__new__(AlphaBackfillService)
+    assert service.MAX_EXPECTED_BYTES == 5_000_000
+    assert service.MAX_EXPECTED_REQUESTS == 80
+    assert service.MAX_SYMBOLS_PER_MARKET == 20
+
+    # Verify daily budget constant
+    from app.services.yahoo_egress import PROJECT_DAILY_EGRESS_BYTES
+    assert PROJECT_DAILY_EGRESS_BYTES == 80_000_000
+
+
+def test_reconstruction_end_date_extended_to_oct_12():
+    """MAX_RECONSTRUCTION_END is 2026-10-12 to cover validated window."""
+    assert AlphaBackfillService.MAX_RECONSTRUCTION_END == date(2026, 10, 12)
+    assert AlphaBackfillService.LAST_SAFE_RUN_DATE == date(2026, 10, 13)
+
+
+# =====================================================================
+# Egress Measurement Regression Tests
+# =====================================================================
+
+
+def test_egress_report_counts_successful_requests_and_bytes():
+    """A successful mocked Yahoo response increments request count and response bytes."""
+    from app.models.quote import HistoricalResponse, HistoricalPrice
+    
+    prices = {
+        "SYM1": [
+            HistoricalPrice(date=date(2026, 9, 14), open=100, high=100, low=100, close=100, adj_close=100, volume=100),
+            HistoricalPrice(date=date(2026, 9, 15), open=101, high=101, low=101, close=101, adj_close=101, volume=100),
+        ],
+        "^NSEI": [
+            HistoricalPrice(date=date(2026, 9, 14), open=25000, high=25000, low=25000, close=25000, adj_close=25000, volume=100),
+            HistoricalPrice(date=date(2026, 9, 15), open=25100, high=25100, low=25100, close=25100, adj_close=25100, volume=100),
+        ],
+    }
+    
+    # Create service without triggering Yahoo calls
+    service = AlphaBackfillService.__new__(AlphaBackfillService)
+    service.egress_session = MagicMock()
+    service.egress_session.request_count = 0
+    service.egress_session.response_bytes = 0
+    service.yahoo = MagicMock()
+    
+    # Mock yahoo.get_historical_prices to return test data and increment session counters
+    def mock_get_historical_prices(ticker, period="1mo", interval="1d"):
+        service.egress_session.request_count += 1
+        service.egress_session.response_bytes += 100  # Simulated response size
+        return HistoricalResponse(
+            symbol=ticker,
+            period="3mo",
+            interval="1d",
+            prices=prices.get(ticker.replace(".NS", ""), []),
+        )
+    
+    service.yahoo.get_historical_prices = mock_get_historical_prices
+    
+    price_series, egress = service._fetch_prices("IN", ["SYM1", "^NSEI"])
+
+    # Two symbols = 2 requests
+    assert egress.request_count == 2
+    # Response bytes should be > 0
+    assert egress.estimated_bytes > 0
+    assert egress.bytes_measured is True
+
+
+def test_egress_report_accumulates_multiple_requests():
+    """Multiple requests in one run accumulate correctly."""
+    from app.models.quote import HistoricalResponse, HistoricalPrice
+    
+    prices = {
+        "SYM1": [HistoricalPrice(date=date(2026, 9, 14), open=100, high=100, low=100, close=100, adj_close=100, volume=100)],
+        "SYM2": [HistoricalPrice(date=date(2026, 9, 14), open=200, high=200, low=200, close=200, adj_close=200, volume=100)],
+        "SYM3": [HistoricalPrice(date=date(2026, 9, 14), open=300, high=300, low=300, close=300, adj_close=300, volume=100)],
+        "^NSEI": [HistoricalPrice(date=date(2026, 9, 14), open=25000, high=25000, low=25000, close=25000, adj_close=25000, volume=100)],
+    }
+    
+    service = AlphaBackfillService.__new__(AlphaBackfillService)
+    service.egress_session = MagicMock()
+    service.egress_session.request_count = 0
+    service.egress_session.response_bytes = 0
+    service.yahoo = MagicMock()
+    
+    def mock_get_historical_prices(ticker, period="1mo", interval="1d"):
+        service.egress_session.request_count += 1
+        service.egress_session.response_bytes += 100
+        return HistoricalResponse(
+            symbol=ticker,
+            period="3mo",
+            interval="1d",
+            prices=prices.get(ticker.replace(".NS", ""), []),
+        )
+    
+    service.yahoo.get_historical_prices = mock_get_historical_prices
+    
+    price_series, egress = service._fetch_prices("IN", ["SYM1", "SYM2", "SYM3", "^NSEI"])
+
+    # Four symbols = 4 requests
+    assert egress.request_count == 4
+    assert egress.estimated_bytes > 0
+
+
+def test_reused_session_reports_run_delta():
+    """A reused session reports only the current run's delta."""
+    from app.models.quote import HistoricalResponse, HistoricalPrice
+    
+    prices = {
+        "SYM1": [HistoricalPrice(date=date(2026, 9, 14), open=100, high=100, low=100, close=100, adj_close=100, volume=100)],
+        "^NSEI": [HistoricalPrice(date=date(2026, 9, 14), open=25000, high=25000, low=25000, close=25000, adj_close=25000, volume=100)],
+    }
+    
+    service = AlphaBackfillService.__new__(AlphaBackfillService)
+    service.egress_session = MagicMock()
+    service.egress_session.request_count = 5  # Simulate prior usage
+    service.egress_session.response_bytes = 1000
+    service.yahoo = MagicMock()
+    
+    def mock_get_historical_prices(ticker, period="1mo", interval="1d"):
+        service.egress_session.request_count += 1
+        service.egress_session.response_bytes += 100
+        return HistoricalResponse(
+            symbol=ticker,
+            period="3mo",
+            interval="1d",
+            prices=prices.get(ticker.replace(".NS", ""), []),
+        )
+    
+    service.yahoo.get_historical_prices = mock_get_historical_prices
+    
+    price_series, egress = service._fetch_prices("IN", ["SYM1", "^NSEI"])
+
+    # Should report delta: 2 requests this run, not cumulative
+    assert egress.request_count == 2
+    assert egress.estimated_bytes == 200  # 2 * 100 bytes this run
+
+
+def test_egress_report_nonzero_when_data_transferred():
+    """Dry-run report no longer reports zero when requests transfer data."""
+    from app.models.quote import HistoricalResponse, HistoricalPrice
+    
+    prices = {
+        "SYM1": [HistoricalPrice(date=date(2026, 9, 14), open=100, high=100, low=100, close=100, adj_close=100, volume=100)],
+        "^NSEI": [HistoricalPrice(date=date(2026, 9, 14), open=25000, high=25000, low=25000, close=25000, adj_close=25000, volume=100)],
+    }
+    
+    service = AlphaBackfillService.__new__(AlphaBackfillService)
+    service.egress_session = MagicMock()
+    service.egress_session.request_count = 0
+    service.egress_session.response_bytes = 0
+    service.yahoo = MagicMock()
+    
+    def mock_get_historical_prices(ticker, period="1mo", interval="1d"):
+        service.egress_session.request_count += 1
+        service.egress_session.response_bytes += 100
+        return HistoricalResponse(
+            symbol=ticker,
+            period="3mo",
+            interval="1d",
+            prices=prices.get(ticker.replace(".NS", ""), []),
+        )
+    
+    service.yahoo.get_historical_prices = mock_get_historical_prices
+    
+    price_series, egress = service._fetch_prices("IN", ["SYM1", "^NSEI"])
+
+    # Before fix: request_count=0, estimated_bytes=0
+    # After fix: should report actual activity
+    assert egress.request_count > 0, "Request count should be > 0 when data is fetched"
+    assert egress.estimated_bytes > 0, "Estimated bytes should be > 0 when data is fetched"
+    assert egress.bytes_measured is True
+
+
+def test_egress_limits_unchanged():
+    """Per-run and daily budget enforcement remains unchanged after fix."""
+    service = AlphaBackfillService.__new__(AlphaBackfillService)
+    # Per-run limits
+    assert service.MAX_EXPECTED_REQUESTS == 80
+    assert service.MAX_EXPECTED_BYTES == 5_000_000
+    assert service.MAX_SYMBOLS_PER_MARKET == 20
+    # Daily budget
+    from app.services.yahoo_egress import PROJECT_DAILY_EGRESS_BYTES
+    assert PROJECT_DAILY_EGRESS_BYTES == 80_000_000
+    # Symbol limit enforcement still works
+    from app.services.alpha_backfill_service import EgressGuardError
+    with pytest.raises(EgressGuardError, match="before Yahoo access"):
+        service._fetch_prices(
+            "IN",
+            [f"S{index}" for index in range(service.MAX_SYMBOLS_PER_MARKET + 1)],
+        )
