@@ -21,9 +21,12 @@ class AlphaPerformanceReportResponse(BaseModel):
 	portfolio_return: Optional[float] = None
 	benchmark_return: Optional[float] = None
 	excess_return: Optional[float] = None
+	alpha: Optional[float] = None
 	as_of: str
 	holdings_count: int
 	reason: Optional[str] = None
+	date_start: Optional[str] = None
+	date_end: Optional[str] = None
 
 
 class AlphaPerformanceSummaryResponse(BaseModel):
@@ -33,6 +36,9 @@ class AlphaPerformanceSummaryResponse(BaseModel):
 	(0-100 scale) because the frontend renders them with a `%` suffix and
 	does not rescale. `alpha` is always `portfolio_return - benchmark_return`
 	and is None whenever `benchmark_return` is None.
+
+	`excess_return` is the same value as a fraction (0-1 scale) for API
+	consistency with `/alpha/performance-report`.
 
 	The raw stored NAV values are returned alongside so the client can show
 	the series without a second request.
@@ -44,6 +50,7 @@ class AlphaPerformanceSummaryResponse(BaseModel):
 	portfolio_return: Optional[float] = None
 	benchmark_return: Optional[float] = None
 	alpha: Optional[float] = None
+	excess_return: Optional[float] = None
 	portfolio_nav: Optional[float] = None
 	benchmark_nav: Optional[float] = None
 	as_of: Optional[str] = None

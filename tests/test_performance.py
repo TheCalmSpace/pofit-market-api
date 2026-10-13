@@ -616,16 +616,25 @@ class TestEgressRegression:
 	def test_report_performance_makes_no_external_call(
 		self, performance_service, mock_perf_repo
 	):
-		mock_perf_repo.get_for_period.return_value = [
-			{"as_of": "2026-01-01T00:00:00", "portfolio_nav": 1.05, "benchmark_nav": 1.03, "holdings_count": 15},
-			{"as_of": "2026-06-01T00:00:00", "portfolio_nav": 1.12, "benchmark_nav": 1.08, "holdings_count": 15},
-		]
+		# Mock datetime to a fixed date so calendar calculations are deterministic
+		with patch("app.services.performance_service.datetime") as mock_dt:
+			mock_dt.utcnow.return_value = datetime(2026, 9, 21, 12, 0, 0)
+			mock_dt.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+			
+			# For 1m (21 trading days) from 2026-09-21:
+			# latest_trading_day = 2026-09-21 (Monday)
+			# requested_start = 21 trading days before = ~2026-08-22
+			# requested_end = 2026-09-21
+			mock_perf_repo.get_for_period.return_value = [
+				{"as_of": "2026-08-24T00:00:00", "portfolio_nav": 1.05, "benchmark_nav": 1.03, "holdings_count": 15},
+				{"as_of": "2026-09-21T00:00:00", "portfolio_nav": 1.12, "benchmark_nav": 1.08, "holdings_count": 15},
+			]
 
-		result = performance_service.report_performance("IN", "1m")
+			result = performance_service.report_performance("IN", "1m")
 
-		assert result["status"] == "available"
-		mock_perf_repo.get_for_period.assert_called_once()
-		assert not hasattr(performance_service, "market")
+			assert result["status"] == "available"
+			mock_perf_repo.get_for_period.assert_called_once()
+			assert not hasattr(performance_service, "market")
 
 
 class TestRoundTrip:
@@ -689,41 +698,65 @@ class TestRoundTrip:
 
 class TestReportPeriods:
 	def test_report_1m(self, performance_service, mock_perf_repo):
-		mock_perf_repo.get_for_period.return_value = [
-			{"market": "IN", "as_of": "2026-08-21T00:00:00", "portfolio_nav": 1.05, "benchmark_nav": 1.03, "holdings_count": 15},
-			{"market": "IN", "as_of": "2026-09-21T00:00:00", "portfolio_nav": 1.10, "benchmark_nav": 1.08, "holdings_count": 15},
-		]
-		result = performance_service.report_performance("IN", "1m")
+		# Mock datetime to 2026-09-21 (Monday) for deterministic calendar
+		with patch("app.services.performance_service.datetime") as mock_dt:
+			mock_dt.utcnow.return_value = datetime(2026, 9, 21, 12, 0, 0)
+			mock_dt.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+			
+			# For 1m (21 trading days) from 2026-09-21:
+			# latest_trading_day = 2026-09-21
+			# requested_start = 21 trading days before = 2026-08-24 (Monday)
+			mock_perf_repo.get_for_period.return_value = [
+				{"market": "IN", "as_of": "2026-08-24T00:00:00", "portfolio_nav": 1.05, "benchmark_nav": 1.03, "holdings_count": 15},
+				{"market": "IN", "as_of": "2026-09-21T00:00:00", "portfolio_nav": 1.10, "benchmark_nav": 1.08, "holdings_count": 15},
+			]
+			result = performance_service.report_performance("IN", "1m")
 
-		assert result["status"] == "available"
-		assert result["portfolio_return"] == pytest.approx((1.10 / 1.05) - 1, rel=1e-2)
-		assert result["benchmark_return"] == pytest.approx((1.08 / 1.03) - 1, rel=1e-2)
-		assert result["excess_return"] == pytest.approx(
-			((1.10 / 1.05) - 1) - ((1.08 / 1.03) - 1), rel=1e-2
-		)
+			assert result["status"] == "available"
+			assert result["portfolio_return"] == pytest.approx((1.10 / 1.05) - 1, rel=1e-2)
+			assert result["benchmark_return"] == pytest.approx((1.08 / 1.03) - 1, rel=1e-2)
+			assert result["excess_return"] == pytest.approx(
+				((1.10 / 1.05) - 1) - ((1.08 / 1.03) - 1), rel=1e-2
+			)
 
 	def test_report_6m(self, performance_service, mock_perf_repo):
-		mock_perf_repo.get_for_period.return_value = [
-			{"market": "IN", "as_of": "2026-03-21T00:00:00", "portfolio_nav": 1.00, "benchmark_nav": 1.00, "holdings_count": 15},
-			{"market": "IN", "as_of": "2026-09-21T00:00:00", "portfolio_nav": 1.20, "benchmark_nav": 1.15, "holdings_count": 15},
-		]
-		result = performance_service.report_performance("IN", "6m")
+		# Mock datetime to 2026-09-21 (Monday) for deterministic calendar
+		with patch("app.services.performance_service.datetime") as mock_dt:
+			mock_dt.utcnow.return_value = datetime(2026, 9, 21, 12, 0, 0)
+			mock_dt.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+			
+			# For 6m (126 trading days) from 2026-09-21:
+			# latest_trading_day = 2026-09-21
+			# requested_start = 126 trading days before = 2026-03-30 (Monday)
+			mock_perf_repo.get_for_period.return_value = [
+				{"market": "IN", "as_of": "2026-03-30T00:00:00", "portfolio_nav": 1.00, "benchmark_nav": 1.00, "holdings_count": 15},
+				{"market": "IN", "as_of": "2026-09-21T00:00:00", "portfolio_nav": 1.20, "benchmark_nav": 1.15, "holdings_count": 15},
+			]
+			result = performance_service.report_performance("IN", "6m")
 
-		assert result["status"] == "available"
-		assert result["portfolio_return"] == pytest.approx(0.20)
-		assert result["benchmark_return"] == pytest.approx(0.15)
+			assert result["status"] == "available"
+			assert result["portfolio_return"] == pytest.approx(0.20)
+			assert result["benchmark_return"] == pytest.approx(0.15)
 
 	def test_report_1y(self, performance_service, mock_perf_repo):
-		mock_perf_repo.get_for_period.return_value = [
-			{"market": "US", "as_of": "2025-09-21T00:00:00", "portfolio_nav": 1.00, "benchmark_nav": 1.00, "holdings_count": 15},
-			{"market": "US", "as_of": "2026-09-21T00:00:00", "portfolio_nav": 1.25, "benchmark_nav": 1.20, "holdings_count": 15},
-		]
-		result = performance_service.report_performance("US", "1y")
+		# Mock datetime to 2026-09-21 (Monday) for deterministic calendar
+		with patch("app.services.performance_service.datetime") as mock_dt:
+			mock_dt.utcnow.return_value = datetime(2026, 9, 21, 12, 0, 0)
+			mock_dt.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+			
+			# For 1y (252 trading days) from 2026-09-21:
+			# latest_trading_day = 2026-09-21
+			# requested_start = 252 trading days before = 2025-10-03 (Friday)
+			mock_perf_repo.get_for_period.return_value = [
+				{"market": "US", "as_of": "2025-10-03T00:00:00", "portfolio_nav": 1.00, "benchmark_nav": 1.00, "holdings_count": 15},
+				{"market": "US", "as_of": "2026-09-21T00:00:00", "portfolio_nav": 1.25, "benchmark_nav": 1.20, "holdings_count": 15},
+			]
+			result = performance_service.report_performance("US", "1y")
 
-		assert result["status"] == "available"
-		assert result["benchmark"] == "^IXIC"
-		assert result["portfolio_return"] == pytest.approx(0.25)
-		assert result["benchmark_return"] == pytest.approx(0.20)
+			assert result["status"] == "available"
+			assert result["benchmark"] == "^IXIC"
+			assert result["portfolio_return"] == pytest.approx(0.25)
+			assert result["benchmark_return"] == pytest.approx(0.20)
 
 	def test_report_since_inception(self, performance_service, mock_perf_repo):
 		mock_perf_repo.get_for_period.return_value = [
@@ -783,8 +816,230 @@ class TestReportPeriods:
 
 		assert result["benchmark"] == "^IXIC"
 
+	# --- Regression tests for period coverage and unit consistency ---
 
-class TestIndUsIndependence:
+	def test_sparse_snapshots_do_not_yield_identical_returns_across_periods(
+		self, performance_service, mock_perf_repo
+	):
+		"""
+		With only 5 trading days of data near 2026-10-06,
+		requesting 1m, 3m, 6m, 1y should all return not_available,
+		not identical available returns.
+		"""
+		with patch("app.services.performance_service.datetime") as mock_dt:
+			mock_dt.utcnow.return_value = datetime(2026, 10, 6, 12, 0, 0)
+			mock_dt.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+
+			# Calendar for 1m from 2026-10-06: requested_start ≈ 2026-09-05 (21 trading days back)
+			# But we only have data from 2026-10-02 to 2026-10-06 (5 trading days)
+			# So start_distance will be large -> not_available
+			mock_perf_repo.get_for_period.return_value = [
+				{"market": "IN", "as_of": "2026-10-02T00:00:00", "portfolio_nav": 100.0, "benchmark_nav": 100.0, "holdings_count": 15},
+				{"market": "IN", "as_of": "2026-10-03T00:00:00", "portfolio_nav": 100.5, "benchmark_nav": 99.8, "holdings_count": 15},
+				{"market": "IN", "as_of": "2026-10-04T00:00:00", "portfolio_nav": 101.0, "benchmark_nav": 99.5, "holdings_count": 15},
+				{"market": "IN", "as_of": "2026-10-05T00:00:00", "portfolio_nav": 101.5, "benchmark_nav": 99.0, "holdings_count": 15},
+				{"market": "IN", "as_of": "2026-10-06T00:00:00", "portfolio_nav": 102.0, "benchmark_nav": 98.5, "holdings_count": 15},
+			]
+
+			# 1m = 21 trading days needed, data starts ~18 trading days after requested start -> not_available
+			result_1m = performance_service.report_performance("IN", "1m")
+			assert result_1m["status"] == "not_available"
+			assert "Insufficient history" in result_1m["reason"] or "Insufficient data span" in result_1m["reason"]
+
+			# 3m = 63 trading days needed -> not_available
+			result_3m = performance_service.report_performance("IN", "3m")
+			assert result_3m["status"] == "not_available"
+
+			# 6m = 126 trading days needed -> not_available
+			result_6m = performance_service.report_performance("IN", "6m")
+			assert result_6m["status"] == "not_available"
+
+			# 1y = 252 trading days needed -> not_available
+			result_1y = performance_service.report_performance("IN", "1y")
+			assert result_1y["status"] == "not_available"
+
+			# since-inception: needs data from 2026-09-14, only have from 2026-10-02 -> not_available
+			result_si = performance_service.report_performance("IN", "since-inception")
+			assert result_si["status"] == "not_available"
+			assert "Insufficient inception history" in result_si["reason"]
+
+	def test_insufficient_coverage_returns_not_available(
+		self, performance_service, mock_perf_repo
+	):
+		"""Period with data spanning only 10 trading days fails 1m (21 days) check."""
+		with patch("app.services.performance_service.datetime") as mock_dt:
+			mock_dt.utcnow.return_value = datetime(2026, 9, 21, 12, 0, 0)
+			mock_dt.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+
+			# Calendar for 1m from 2026-09-21: requested_start = 2026-08-24
+			# We provide data starting at 2026-09-08 (11 trading days after requested start)
+			# This exceeds MAX_START_TOLERANCE=2 -> not_available
+			mock_perf_repo.get_for_period.return_value = [
+				{"market": "IN", "as_of": "2026-09-08T00:00:00", "portfolio_nav": 100.0, "benchmark_nav": 100.0, "holdings_count": 15},
+				{"market": "IN", "as_of": "2026-09-21T00:00:00", "portfolio_nav": 105.0, "benchmark_nav": 103.0, "holdings_count": 15},
+			]
+
+			result = performance_service.report_performance("IN", "1m")
+			assert result["status"] == "not_available"
+			assert "Insufficient history" in result["reason"] or "Insufficient data span" in result["reason"]
+
+	def test_sufficient_coverage_produces_correct_interval_return(
+		self, performance_service, mock_perf_repo
+	):
+		"""21 trading days of data yields valid 1m return."""
+		with patch("app.services.performance_service.datetime") as mock_dt:
+			mock_dt.utcnow.return_value = datetime(2026, 9, 21, 12, 0, 0)
+			mock_dt.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+
+			# 21 trading days of data: 2026-08-24 to 2026-09-21
+			mock_perf_repo.get_for_period.return_value = [
+				{"market": "IN", "as_of": "2026-08-24T00:00:00", "portfolio_nav": 100.0, "benchmark_nav": 100.0, "holdings_count": 15},
+				{"market": "IN", "as_of": "2026-09-21T00:00:00", "portfolio_nav": 110.0, "benchmark_nav": 105.0, "holdings_count": 15},
+			]
+
+			result = performance_service.report_performance("IN", "1m")
+			assert result["status"] == "available"
+			assert result["portfolio_return"] == pytest.approx(0.10)
+			assert result["benchmark_return"] == pytest.approx(0.05)
+			assert result["excess_return"] == pytest.approx(0.05)
+			assert result["alpha"] == pytest.approx(5.0)  # percentage
+
+	def test_missing_september_15_gap_does_not_fabricate_returns(
+		self, performance_service, mock_perf_repo
+	):
+		"""
+		The 2026-09-15 India data gap (no prices) should not cause
+		fabricated prices or returns. The span check uses actual
+		snapshot dates, so a gap in the middle doesn't affect the
+		start/end span calculation.
+		"""
+		with patch("app.services.performance_service.datetime") as mock_dt:
+			mock_dt.utcnow.return_value = datetime(2026, 9, 21, 12, 0, 0)
+			mock_dt.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+
+			# Data from 2026-08-24 (requested_start for 1m) to 2026-09-21
+			# with a gap at 2026-09-15 (no data for that day)
+			# This is 21 trading days apart (minus the gap day)
+			mock_perf_repo.get_for_period.return_value = [
+				{"market": "IN", "as_of": "2026-08-24T00:00:00", "portfolio_nav": 100.0, "benchmark_nav": 100.0, "holdings_count": 15},
+				{"market": "IN", "as_of": "2026-08-25T00:00:00", "portfolio_nav": 100.5, "benchmark_nav": 99.8, "holdings_count": 15},
+				# ... gap at 2026-09-15 (no row)
+				{"market": "IN", "as_of": "2026-09-16T00:00:00", "portfolio_nav": 101.0, "benchmark_nav": 99.5, "holdings_count": 15},
+				{"market": "IN", "as_of": "2026-09-17T00:00:00", "portfolio_nav": 101.5, "benchmark_nav": 99.0, "holdings_count": 15},
+				{"market": "IN", "as_of": "2026-09-18T00:00:00", "portfolio_nav": 102.0, "benchmark_nav": 98.5, "holdings_count": 15},
+				{"market": "IN", "as_of": "2026-09-21T00:00:00", "portfolio_nav": 103.0, "benchmark_nav": 98.0, "holdings_count": 15},
+			]
+
+			# 1m needs 21 trading days, we have ~20 trading days of data (one gap day)
+			# With tolerance of 2 at each end, this should be available
+			result = performance_service.report_performance("IN", "1m")
+			# The gap doesn't cause fabrication - we just use actual start/end dates
+			assert result["status"] == "available"
+			assert result["date_start"] == "2026-08-24"
+			assert result["date_end"] == "2026-09-21"
+			# Return is computed from actual first and last snapshot, gap is ignored
+			assert result["portfolio_return"] == pytest.approx(0.03)
+
+	def test_since_inception_respects_official_inception_date(
+		self, performance_service, mock_perf_repo
+	):
+		"""
+		Since-inception must use the official inception date (2026-09-12)
+		and not silently use a later baseline while claiming full coverage.
+		"""
+		with patch("app.services.performance_service.datetime") as mock_dt:
+			mock_dt.utcnow.return_value = datetime(2026, 10, 6, 12, 0, 0)
+			mock_dt.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+
+			# Data starts at 2026-09-14 (first reliable trading day), not 2026-09-12
+			# This is within 2 trading days tolerance, so start check passes
+			# But we need sufficient span from 2026-09-14 to 2026-10-06
+			mock_perf_repo.get_for_period.return_value = [
+				{"market": "IN", "as_of": "2026-09-14T00:00:00", "portfolio_nav": 100.0, "benchmark_nav": 100.0, "holdings_count": 15},
+				{"market": "IN", "as_of": "2026-10-06T00:00:00", "portfolio_nav": 105.0, "benchmark_nav": 103.0, "holdings_count": 15},
+			]
+
+			result = performance_service.report_performance("IN", "since-inception")
+			# Should be available since span is ~16 trading days > 5 minimum
+			assert result["status"] == "available"
+			assert result["date_start"] == "2026-09-14"
+			assert result["date_end"] == "2026-10-06"
+			assert result["portfolio_return"] == pytest.approx(0.05)
+
+	def test_since_inception_rejects_late_baseline_masquerading_as_full_coverage(
+		self, performance_service, mock_perf_repo
+	):
+		"""
+		If data starts significantly after official inception (e.g., 2026-10-01),
+		since-inception should return not_available, not claim full coverage.
+		"""
+		with patch("app.services.performance_service.datetime") as mock_dt:
+			mock_dt.utcnow.return_value = datetime(2026, 10, 6, 12, 0, 0)
+			mock_dt.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+
+			# Data starts at 2026-10-01, well after official inception 2026-09-12
+			mock_perf_repo.get_for_period.return_value = [
+				{"market": "IN", "as_of": "2026-10-01T00:00:00", "portfolio_nav": 100.0, "benchmark_nav": 100.0, "holdings_count": 15},
+				{"market": "IN", "as_of": "2026-10-06T00:00:00", "portfolio_nav": 102.0, "benchmark_nav": 101.0, "holdings_count": 15},
+			]
+
+			result = performance_service.report_performance("IN", "since-inception")
+			assert result["status"] == "not_available"
+			assert "Insufficient inception history" in result["reason"]
+
+	def test_endpoints_reconcile_after_unit_conversion(
+		self, performance_service, mock_perf_repo
+	):
+		"""
+		/alpha/performance (summary) returns percentage alpha.
+		/alpha/performance-report returns fraction excess_return and percentage alpha.
+		They should be mathematically consistent: alpha_pct = excess_return * 100.
+		"""
+		mock_perf_repo.get_for_period.return_value = [
+			{"market": "IN", "as_of": "2026-09-14T00:00:00", "portfolio_nav": 100.0, "benchmark_nav": 100.0, "holdings_count": 15},
+			{"market": "IN", "as_of": "2026-10-06T00:00:00", "portfolio_nav": 110.0, "benchmark_nav": 105.0, "holdings_count": 15},
+		]
+
+		# Direct call to report_performance (used by /alpha/performance-report)
+		report = performance_service.report_performance("IN", "since-inception")
+
+		# The report should have both excess_return (fraction) and alpha (percentage)
+		assert "excess_return" in report
+		assert "alpha" in report
+		assert report["excess_return"] is not None
+		assert report["alpha"] is not None
+		assert report["alpha"] == pytest.approx(report["excess_return"] * 100.0)
+
+		# Simulate _build_performance_summary (used by /alpha/performance)
+		portfolio_pct = report["portfolio_return"] * 100.0 if report["portfolio_return"] is not None else None
+		benchmark_pct = report["benchmark_return"] * 100.0 if report["benchmark_return"] is not None else None
+		alpha_pct = portfolio_pct - benchmark_pct if portfolio_pct is not None and benchmark_pct is not None else None
+
+		assert alpha_pct == pytest.approx(report["alpha"])
+		assert alpha_pct == pytest.approx(report["excess_return"] * 100.0)
+
+	def test_response_includes_alpha_field_in_report(
+		self, performance_service, mock_perf_repo
+	):
+		"""AlphaPerformanceReportResponse now includes alpha (percentage) field."""
+		mock_perf_repo.get_for_period.return_value = [
+			{"market": "IN", "as_of": "2026-09-14T00:00:00", "portfolio_nav": 100.0, "benchmark_nav": 100.0, "holdings_count": 15},
+			{"market": "IN", "as_of": "2026-10-06T00:00:00", "portfolio_nav": 110.0, "benchmark_nav": 105.0, "holdings_count": 15},
+		]
+
+		result = performance_service.report_performance("IN", "since-inception")
+		assert "alpha" in result
+		assert result["alpha"] == pytest.approx(5.0)  # 10% - 5% = 5%
+
+	def test_not_available_includes_alpha_null(
+		self, performance_service, mock_perf_repo
+	):
+		"""Not available response includes alpha: null for consistency."""
+		mock_perf_repo.get_for_period.return_value = []
+		result = performance_service.report_performance("IN", "1m")
+		assert result["status"] == "not_available"
+		assert result["alpha"] is None
+		assert result["excess_return"] is None
 	def test_in_and_us_have_separate_nav(
 		self,
 		performance_service,

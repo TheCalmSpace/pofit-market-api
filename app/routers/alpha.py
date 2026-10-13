@@ -71,6 +71,7 @@ def _build_performance_summary(market: str) -> dict:
 
 	portfolio_pct = report.get("portfolio_return")
 	benchmark_pct = report.get("benchmark_return")
+	excess_return = report.get("excess_return")
 
 	if portfolio_pct is not None:
 		portfolio_pct = portfolio_pct * 100.0
@@ -90,6 +91,7 @@ def _build_performance_summary(market: str) -> dict:
 		"portfolio_return": portfolio_pct,
 		"benchmark_return": benchmark_pct,
 		"alpha": alpha,
+		"excess_return": excess_return,
 		"portfolio_nav": snapshot.get("portfolio_nav"),
 		"benchmark_nav": snapshot.get("benchmark_nav"),
 		"as_of": snapshot.get("as_of") or report.get("as_of"),

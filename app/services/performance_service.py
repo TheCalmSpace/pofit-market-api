@@ -1,5 +1,5 @@
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import json
 
@@ -46,6 +46,51 @@ def _is_from_trading_day(updated_at: Any, snapshot_date: str) -> bool:
 	return text.split("T", 1)[0][:10] == snapshot_date
 
 
+def _parse_as_of_date(as_of: Any) -> Optional[date]:
+	"""Parse the date portion from an as_of timestamp."""
+	if as_of is None:
+		return None
+	# Handle datetime objects (from database or tests)
+	if hasattr(as_of, 'date') and callable(getattr(as_of, 'date')):
+		try:
+			return as_of.date()
+		except Exception:
+			pass
+	# Handle date objects
+	if hasattr(as_of, 'year') and hasattr(as_of, 'month') and hasattr(as_of, 'day'):
+		try:
+			return date(as_of.year, as_of.month, as_of.day)
+		except Exception:
+			pass
+	# Handle string timestamps (ISO format from Supabase)
+	if isinstance(as_of, str):
+		text = as_of.strip()
+		# Parse YYYY-MM-DD from ISO format (with or without time/timezone)
+		date_part = text.split("T", 1)[0]
+		parts = date_part.split("-")
+		if len(parts) == 3:
+			try:
+				return date(int(parts[0]), int(parts[1]), int(parts[2]))
+			except (ValueError, IndexError):
+				return None
+	return None
+
+
+def _trading_day_distance(calendar: TradingCalendar, d1: date, d2: date) -> int:
+	"""Return the number of trading days between d1 and d2 (exclusive of d2).
+	
+	Returns a positive number if d1 < d2, negative if d1 > d2.
+	"""
+	if d1 == d2:
+		return 0
+	if d1 < d2:
+		days = calendar.trading_days(d1, d2)
+		return len(days) - 1 if days else 0
+	else:
+		days = calendar.trading_days(d2, d1)
+		return -(len(days) - 1) if days else 0
+
+
 class PerformanceService:
 	"""
 	Computes daily portfolio performance snapshots and stores them
@@ -88,6 +133,13 @@ class PerformanceService:
 	RELIABLE_INCEPTION_START = {
 		"IN": date(2026, 9, 14),
 		"US": date(2026, 9, 14),
+	}
+
+	# Official product inception date for performance reporting.
+	# This is the date from which since-inception periods are measured.
+	OFFICIAL_INCEPTION_DATE = {
+		"IN": date(2026, 9, 12),
+		"US": date(2026, 9, 12),
 	}
 
 	# Period definitions in trading days (not calendar days)
@@ -342,23 +394,21 @@ class PerformanceService:
 		now = datetime.utcnow()
 		calendar = self._get_calendar(market)
 
-		# Determine start and end dates based on period
+		# Determine requested start and end dates based on period
 		if period_key == "since-inception":
-			# Use the first trading day on or after the reliable boundary
-			boundary = self.RELIABLE_INCEPTION_START.get(market)
+			# Use the first trading day on or after the official inception date
+			boundary = self.OFFICIAL_INCEPTION_DATE.get(market)
 			if boundary is None:
 				return self._not_available(market, period_key, benchmark_symbol, now,
 					f"Unknown market {market}")
-			date_start = calendar.next_trading_day(boundary - timedelta(days=1))
-			if date_start is None:
+			requested_start = calendar.next_trading_day(boundary - timedelta(days=1))
+			if requested_start is None:
 				return self._not_available(market, period_key, benchmark_symbol, now,
-					"No trading day found after reliable boundary")
-			# For since-inception, date_end is None to include all available data
-			# (matching the original behavior for backward compatibility)
-			date_end = None
+					"No trading day found after official inception date")
+			requested_end = None  # Include all available data
 		elif period_key == "fy2025-26":
-			date_start = calendar.next_trading_day(self.FY_START - timedelta(days=1))
-			date_end = calendar.previous_trading_day(self.FY_END + timedelta(days=1))
+			requested_start = calendar.next_trading_day(self.FY_START - timedelta(days=1))
+			requested_end = calendar.previous_trading_day(self.FY_END + timedelta(days=1))
 		elif period_key in self.PERIOD_TRADING_DAYS:
 			# Count back trading days from the most recent completed trading day
 			today = now.date()
@@ -375,8 +425,8 @@ class PerformanceService:
 			if len(trading_days) < required_days:
 				return self._not_available(market, period_key, benchmark_symbol, now,
 					f"Insufficient trading history for {period_key} period")
-			date_start = trading_days[-required_days]
-			date_end = latest_trading_day
+			requested_start = trading_days[-required_days]
+			requested_end = latest_trading_day
 		else:
 			return {
 				"market": market,
@@ -395,7 +445,7 @@ class PerformanceService:
 			"market", "as_of", "portfolio_nav", "benchmark_nav", "holdings_count",
 		]
 		snapshots = self.performance_repo.get_for_period(
-			market, columns, date_start, date_end
+			market, columns, requested_start, requested_end
 		)
 
 		if len(snapshots) < 2:
@@ -406,8 +456,85 @@ class PerformanceService:
 			)
 			return self._not_available(market, period_key, benchmark_symbol, now, reason)
 
-		start = snapshots[0]
-		end = snapshots[-1]
+		# Verify actual data coverage matches requested period
+		first_snapshot = snapshots[0]
+		last_snapshot = snapshots[-1]
+
+		actual_start_date = _parse_as_of_date(first_snapshot.get("as_of"))
+		actual_end_date = _parse_as_of_date(last_snapshot.get("as_of"))
+
+		if actual_start_date is None or actual_end_date is None:
+			return self._not_available(
+				market, period_key, benchmark_symbol, now,
+				"Invalid snapshot date data",
+			)
+
+		# For fixed periods, verify the data covers the requested period
+		# Allow up to 2 trading days tolerance for start/end alignment
+		MAX_START_TOLERANCE = 2
+		MAX_END_TOLERANCE = 2
+
+		if period_key in self.PERIOD_TRADING_DAYS:
+			# Check start coverage
+			start_distance = _trading_day_distance(calendar, requested_start, actual_start_date)
+			if start_distance > MAX_START_TOLERANCE:
+				return self._not_available(
+					market, period_key, benchmark_symbol, now,
+					f"Insufficient history: data starts {start_distance} trading days after requested period start",
+				)
+			# Check end coverage (should be at or near latest trading day)
+			end_distance = _trading_day_distance(calendar, actual_end_date, requested_end)
+			if end_distance > MAX_END_TOLERANCE:
+				return self._not_available(
+					market, period_key, benchmark_symbol, now,
+					f"Insufficient recent data: latest snapshot is {end_distance} trading days before period end",
+				)
+			# Verify the actual data span covers the required trading days
+			# (allowing tolerance at both ends)
+			required_days = self.PERIOD_TRADING_DAYS[period_key]
+			actual_span = _trading_day_distance(calendar, actual_start_date, actual_end_date)
+			if actual_span < required_days - MAX_START_TOLERANCE - MAX_END_TOLERANCE:
+				return self._not_available(
+					market, period_key, benchmark_symbol, now,
+					f"Insufficient data span: {actual_span} trading days between first and last snapshot, "
+					f"need at least {required_days - MAX_START_TOLERANCE - MAX_END_TOLERANCE} for {period_key}",
+				)
+		elif period_key == "since-inception":
+			# Verify data starts on or near the official inception date
+			start_distance = _trading_day_distance(calendar, requested_start, actual_start_date)
+			if start_distance > MAX_START_TOLERANCE:
+				return self._not_available(
+					market, period_key, benchmark_symbol, now,
+					f"Insufficient inception history: data starts {start_distance} trading days after official inception",
+				)
+			# For since-inception, end should be the latest available data
+			requested_end = actual_end_date
+			# Require a minimum data span to compute a meaningful return
+			min_inception_span = 5
+			actual_span = _trading_day_distance(calendar, actual_start_date, actual_end_date)
+			if actual_span < min_inception_span:
+				return self._not_available(
+					market, period_key, benchmark_symbol, now,
+					f"Insufficient inception data span: {actual_span} trading days between first and last snapshot, "
+					f"need at least {min_inception_span}",
+				)
+		elif period_key == "fy2025-26":
+			# Verify FY period coverage
+			start_distance = _trading_day_distance(calendar, requested_start, actual_start_date)
+			if start_distance > MAX_START_TOLERANCE:
+				return self._not_available(
+					market, period_key, benchmark_symbol, now,
+					f"Insufficient FY data: data starts {start_distance} trading days after FY start",
+				)
+			end_distance = _trading_day_distance(calendar, actual_end_date, requested_end)
+			if end_distance > MAX_END_TOLERANCE:
+				return self._not_available(
+					market, period_key, benchmark_symbol, now,
+					f"Insufficient FY data: latest snapshot is {end_distance} trading days before FY end",
+				)
+
+		start = first_snapshot
+		end = last_snapshot
 
 		portfolio_nav_start = start.get("portfolio_nav")
 		portfolio_nav_end = end.get("portfolio_nav")
@@ -447,6 +574,11 @@ class PerformanceService:
 			)
 
 		excess_return = portfolio_return - benchmark_return
+		alpha_pct = excess_return * 100.0
+
+		# Return actual dates from the snapshots used in calculation
+		actual_start_str = actual_start_date.isoformat()
+		actual_end_str = actual_end_date.isoformat() if actual_end_date else None
 
 		return {
 			"market": market,
@@ -456,10 +588,11 @@ class PerformanceService:
 			"portfolio_return": portfolio_return,
 			"benchmark_return": benchmark_return,
 			"excess_return": excess_return,
+			"alpha": alpha_pct,
 			"as_of": end.get("as_of"),
 			"holdings_count": end.get("holdings_count", 0),
-			"date_start": date_start.isoformat(),
-			"date_end": date_end.isoformat() if date_end else None,
+			"date_start": actual_start_str,
+			"date_end": actual_end_str,
 		}
 
 	def _get_yesterday_trading_date(self, market: str) -> date:
@@ -510,6 +643,7 @@ class PerformanceService:
 			"portfolio_return": None,
 			"benchmark_return": None,
 			"excess_return": None,
+			"alpha": None,
 			"as_of": now.isoformat(),
 			"holdings_count": 0,
 			"reason": reason,
