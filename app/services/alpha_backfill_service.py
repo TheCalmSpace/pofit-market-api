@@ -658,14 +658,15 @@ class AlphaBackfillService:
     ) -> Tuple[List[ProposedRow], List[Dict[str, Any]]]:
         """Compute the reconstructed NAV series for one market.
 
-        The first trading day is the baseline (NAV 100.0, zero return).
-        Every later trading day chains ``NAV_t = NAV_{t-1} * (1 + r)``
-        where ``r`` is the equal-weighted mean of the daily returns of
-        the holdings that were active on the previous trading day.
-
-        If a trading day has zero valid holding prices, it is recorded as
-        a gap (SKIP) and does not block the write. The next day with valid
-        prices chains from the last valid day using a multi-day return.
+        The first trading day with at least one valid equity price becomes
+        the baseline (NAV 100.0, zero return). Earlier trading days with
+        zero valid equity prices are recorded as gaps (SKIP) and do not
+        block the write. Every later trading day chains
+        ``NAV_t = NAV_{t-1} * (1 + r)`` where ``r`` is the equal-weighted
+        mean of the daily returns of the holdings that were active on the
+        previous trading day with valid prices. If a trading day has zero
+        valid holding prices, it is recorded as a gap and the next day with
+        valid prices chains from the last valid day using a multi-day return.
         """
         proposed_rows: List[ProposedRow] = []
         skipped: List[Dict[str, Any]] = []
@@ -678,22 +679,54 @@ class AlphaBackfillService:
         last_valid_portfolio_nav = self.BASELINE_NAV
         last_valid_benchmark_nav = self.BASELINE_NAV
 
-        # First trading day in the reconstruction window (baseline)
-        first_reconstruction_day = trading_days[0] if trading_days else None
+        # Find the first trading day that has at least one valid equity price
+        # (benchmark alone is not sufficient for a valid baseline)
+        first_valid_day: Optional[date] = None
+        for day in trading_days:
+            active = membership.get(day, set())
+            equity_symbols = [s for s in active if not s.startswith("^")]
+            has_equity_price = False
+            for symbol in equity_symbols:
+                if self._has_close(series, symbol, day):
+                    has_equity_price = True
+                    break
+            if has_equity_price:
+                first_valid_day = day
+                break
+
+        if first_valid_day is None:
+            # No trading day in the window has any equity price.
+            # Mark all days as skipped and return empty proposed rows.
+            for day in trading_days:
+                day_str = day.isoformat()
+                active = membership.get(day, set())
+                skipped.append(
+                    {
+                        "date": day_str,
+                        "reason": "no trading day in window has usable equity prices",
+                        "blocks_write": False,
+                    }
+                )
+            return proposed_rows, skipped
 
         for index, day in enumerate(trading_days):
             day_str = day.isoformat()
             active = membership.get(day, set())
 
-            if index == 0:
-                # Baseline: no previous trading day in the reliable
-                # series, so the return is zero by definition.
+            if day == first_valid_day:
+                # Baseline: first day with valid equity prices.
+                # Return is zero by definition; this is not a measured return.
                 last_valid_day = day
+                equity_symbols = [s for s in active if not s.startswith("^")]
+                valid_equity = sum(1 for s in equity_symbols if self._has_close(series, s, day))
                 coverage = HoldingCoverage(
                     snapshot_date=day_str,
                     active_holdings=len(active),
-                    valid_prices=0,
-                    excluded_missing=0,
+                    valid_prices=valid_equity,
+                    excluded_missing=len(equity_symbols) - valid_equity,
+                    excluded_symbols=[
+                        s for s in equity_symbols if not self._has_close(series, s, day)
+                    ],
                 )
                 proposed_rows.append(
                     ProposedRow(
@@ -712,22 +745,32 @@ class AlphaBackfillService:
                 )
                 continue
 
+            if day < first_valid_day:
+                # Trading day before the first valid baseline: gap.
+                skipped.append(
+                    {
+                        "date": day_str,
+                        "reason": "no previous trading day with usable equity prices",
+                        "blocks_write": False,
+                    }
+                )
+                continue
+
             # Find the previous trading day that has valid prices for the holdings
             # Start from calendar previous trading day and walk back until we find one with prices
             prev_day_candidate = calendar.previous_trading_day(day)
             prev_day_for_prices = None
             while prev_day_candidate is not None:
-                # Stop if we've gone before the first reconstruction day
-                if first_reconstruction_day is not None and prev_day_candidate < first_reconstruction_day:
+                # Stop if we've gone before the first valid day
+                if prev_day_candidate < first_valid_day:
                     break
                 # Check if this candidate day has prices for at least one holding
                 # We need to check membership as of prev_day_candidate
                 candidate_holdings = self._membership_for_return_day(events, prev_day_candidate)
                 has_prices = False
                 for symbol in candidate_holdings:
-                    current = self._close(series, symbol, day)
                     previous = self._close(series, symbol, prev_day_candidate)
-                    if current is not None and previous is not None and previous > 0:
+                    if previous is not None and previous > 0:
                         has_prices = True
                         break
                 if has_prices:
@@ -740,7 +783,7 @@ class AlphaBackfillService:
                     break
 
             if prev_day_for_prices is None:
-                # No previous trading day with prices found
+                # No previous trading day with prices found (should not happen after first_valid_day)
                 skipped.append(
                     {
                         "date": day_str,

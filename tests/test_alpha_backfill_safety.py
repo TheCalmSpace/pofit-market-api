@@ -248,28 +248,62 @@ def test_zero_eligible_returns_skipped_but_not_blocked():
     events = [_event("CPRX", "ADD", "2026-09-13")]
     service, yahoo, _, performance_repo = _service(events)
 
-    # No prices provided for CPRX -> zero eligible returns for 2026-09-15
-    # Should NOT block write, but should record skipped date for 2026-09-15
-    # The baseline day (2026-09-14) still gets inserted
-    result = service.run("IN", mode="write", end_date=date(2026, 9, 15))
+    # Provide price for CPRX on 2026-09-15 but not 2026-09-14
+    # This simulates the real scenario where the first trading day has no equity prices
+    # The first valid day should be 2026-09-15 (baseline), 2026-09-14 skipped
+    from types import SimpleNamespace
+    def _hp(d, close):
+        return SimpleNamespace(
+            date=d, open=close, high=close, low=close,
+            close=close, adj_close=close, volume=100
+        )
+    prices = {
+        "CPRX.NS": [
+            _hp(date(2026, 9, 15), 100),
+            _hp(date(2026, 9, 16), 101),
+        ],
+        "^NSEI": [
+            _hp(date(2026, 9, 14), 25000),
+            _hp(date(2026, 9, 15), 25100),
+            _hp(date(2026, 9, 16), 25200),
+        ],
+    }
+    service.yahoo.get_historical_prices = MagicMock(
+        side_effect=lambda *args, **kwargs: SimpleNamespace(
+            prices=prices.get(args[0], [])
+        )
+    )
+
+    # No prices provided for CPRX on 2026-09-14 -> first valid day is 2026-09-15
+    # Should NOT block write, should record skipped date for 2026-09-14
+    # The baseline day is now 2026-09-15 (first day with equity prices)
+    result = service.run("IN", mode="write", end_date=date(2026, 9, 16))
 
     assert result.write_blocked is False
     assert len(result.write_blockers) == 0
-    # Should have one skipped date (2026-09-15) with blocks_write=False
-    skipped_15 = [s for s in result.skipped_dates if s["date"] == "2026-09-15"]
-    assert len(skipped_15) == 1
-    assert skipped_15[0]["blocks_write"] is False
+    # Should have one skipped date (2026-09-14) with blocks_write=False
+    skipped_14 = [s for s in result.skipped_dates if s["date"] == "2026-09-14"]
+    assert len(skipped_14) == 1
+    assert skipped_14[0]["blocks_write"] is False
+    # 2026-09-15 should be the baseline (proposed row with zero return)
+    proposed_15 = [r for r in result.proposed_rows if r.date == "2026-09-15"]
+    assert len(proposed_15) == 1
+    assert proposed_15[0].portfolio_return == 0.0
+    # 2026-09-16 should have a measured return
+    proposed_16 = [r for r in result.proposed_rows if r.date == "2026-09-16"]
+    assert len(proposed_16) == 1
+    assert proposed_16[0].portfolio_return == pytest.approx(0.01)
 
     assert yahoo.get_historical_prices.call_count == 2
     assert service.egress_session.request_count == 0
     # Write mode still checks existing rows for reconciliation
-    assert performance_repo.get_rows_for_date.call_count == 2
-    # Reconciliation plan is applied for the baseline row (2026-09-14)
+    assert performance_repo.get_rows_for_date.call_count == 3
+    # Reconciliation plan is applied for the baseline row (2026-09-15) and 2026-09-16
     assert performance_repo.apply_reconciliation_plan.call_count == 1
     plan = performance_repo.apply_reconciliation_plan.call_args[0][0]
-    assert len(plan) == 1
-    assert plan[0]["kind"] == "INSERT"
-    assert plan[0]["date"] == "2026-09-14"
+    assert len(plan) == 2
+    dates = {p["date"] for p in plan}
+    assert dates == {"2026-09-15", "2026-09-16"}
 
 
 def test_october_second_india_rows_are_included_in_delete_plan():
