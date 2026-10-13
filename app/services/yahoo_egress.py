@@ -211,7 +211,11 @@ class BoundedSessionMixin:
 
 
 class BoundedYahooSession(BoundedSessionMixin, Session):
-    """curl_cffi Session with shared project-wide egress limits."""
+    """curl_cffi Session with shared project-wide egress limits.
+
+    Uses streaming to enforce byte limits during download. This can break
+    libraries like yfinance that expect non-streaming responses.
+    """
 
     def __init__(
         self,
@@ -274,6 +278,48 @@ class BoundedYahooSession(BoundedSessionMixin, Session):
         response.close()
         response.content = b"".join(chunks)
         response._text = ""
+        self._release_budget(body_budget, body_bytes)
+        return response
+
+
+class BoundedYahooSessionCompat(BoundedSessionMixin, Session):
+    """curl_cffi Session with shared project-wide egress limits (compat mode).
+
+    Does NOT use streaming, so it works with yfinance and other libraries
+    that expect standard response objects. Byte limits are enforced after
+    the full response is received rather than during streaming.
+    """
+
+    def __init__(
+        self,
+        max_response_bytes: int = SHARED_MAX_RESPONSE_BYTES,
+        max_requests: int = SHARED_MAX_REQUESTS,
+        budget: Optional["EgressBudget"] = None,
+    ) -> None:
+        Session.__init__(self, impersonate="chrome")
+        BoundedSessionMixin.__init__(
+            self,
+            budget=budget or get_shared_budget(),
+            max_response_bytes=max_response_bytes,
+            max_requests=max_requests,
+        )
+
+    def request(self, method: str, url: str, **kwargs: Any) -> Response:
+        self._check_run_limits()
+        body_budget = self._reserve_budget()
+        self.request_count += 1
+        # Do NOT use streaming - compatibility with yfinance
+        kwargs["stream"] = False
+        response = super().request(method, url, **kwargs)
+
+        # Enforce byte limit after response is received
+        body_bytes = len(response.content) if response.content else 0
+        self.response_bytes += body_bytes
+        if body_bytes > body_budget:
+            self._release_budget(body_budget, body_bytes)
+            response.close()
+            raise EgressLimitError("Response exceeded its reserved egress budget.")
+
         self._release_budget(body_budget, body_bytes)
         return response
 

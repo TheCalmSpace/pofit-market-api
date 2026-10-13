@@ -50,7 +50,7 @@ from app.repositories.portfolio_performance_repository import (
     PortfolioPerformanceRepository,
 )
 from app.services.trading_calendar import TradingCalendar, get_calendar
-from app.services.yahoo_egress import BoundedYahooSession
+from app.services.yahoo_egress import BoundedYahooSession, BoundedYahooSessionCompat
 from app.services.yahoo_service import YahooService
 
 
@@ -254,7 +254,8 @@ class AlphaBackfillService:
         alpha_history_repo: Optional[AlphaHistoryRepository] = None,
         performance_repo: Optional[PortfolioPerformanceRepository] = None,
     ) -> None:
-        self.egress_session = BoundedYahooSession(
+        # Use compat session (no streaming) for yfinance compatibility
+        self.egress_session = BoundedYahooSessionCompat(
             max_response_bytes=self.MAX_EXPECTED_BYTES,
             max_requests=self.MAX_EXPECTED_REQUESTS,
         )
