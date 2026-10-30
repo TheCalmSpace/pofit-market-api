@@ -391,14 +391,18 @@ class BoundedNSESession(BoundedSessionMixin, RequestsSession):
         return response
 
 
-_shared_yahoo_session: Optional[BoundedYahooSession] = None
+_shared_yahoo_session: Optional[BoundedYahooSessionCompat] = None
 
 
-def get_shared_yahoo_session() -> BoundedYahooSession:
-    """Return the process-wide shared BoundedYahooSession."""
+def get_shared_yahoo_session() -> BoundedYahooSessionCompat:
+    """Return the process-wide shared BoundedYahooSessionCompat.
+
+    Uses the non-streaming compat session for compatibility with yfinance
+    across the current dependency stack while preserving egress limits.
+    """
     global _shared_yahoo_session
     if _shared_yahoo_session is None:
-        _shared_yahoo_session = BoundedYahooSession()
+        _shared_yahoo_session = BoundedYahooSessionCompat()
     return _shared_yahoo_session
 
 
