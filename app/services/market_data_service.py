@@ -278,6 +278,24 @@ class MarketDataService:
             return False
 
         if cached.get("cache_status") not in {"fresh", "partial"}:
+            # Allow cached entries missing cache_status if they have quote data
+            # and are recent (legacy rows) - but prefer refresh if missing financials
+            if cached.get("cache_status") is None and cached.get("quote_json"):
+                updated = cached.get("updated_at")
+                if updated:
+                    try:
+                        updated = datetime.fromisoformat(
+                            updated.replace("Z", "+00:00")
+                        )
+                        updated = updated.replace(tzinfo=None)
+                        # If missing financials/financial_history, treat as invalid for full data
+                        if cached.get("financials_json") is None or cached.get("financial_history_json") is None:
+                            return False
+                        return (
+                            datetime.utcnow() - updated
+                        ) < CACHE_TTL
+                    except Exception:
+                        pass
             return False
 
         updated = cached.get("updated_at")
@@ -294,6 +312,13 @@ class MarketDataService:
 
         updated = updated.replace(tzinfo=None)
 
-        return (
+        if (
             datetime.utcnow() - updated
-        ) < CACHE_TTL
+        ) >= CACHE_TTL:
+            return False
+        
+        # If cache is fresh but missing financial data, refresh
+        if cached.get("financials_json") is None or cached.get("financial_history_json") is None:
+            return False
+
+        return True

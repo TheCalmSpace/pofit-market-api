@@ -14,7 +14,11 @@ class StockDataRepository:
     def get(self, symbol: str) -> Optional[Dict[str, Any]]:
         result = (
             supabase.table("stock_data")
-            .select("symbol, quote_json, metrics_json, score_json, updated_at")
+            .select(
+                "symbol, quote_json, metrics_json, score_json, updated_at, "
+                "cache_status, financials_json, financial_history_json, "
+                "eligibility_json, explanation_json"
+            )
             .eq("symbol", symbol.upper())
             .limit(1)
             .execute()
@@ -41,7 +45,11 @@ class StockDataRepository:
 
         result = (
             supabase.table("stock_data")
-            .select("symbol, quote_json, metrics_json, score_json, updated_at")
+            .select(
+                "symbol, quote_json, metrics_json, score_json, updated_at, "
+                "cache_status, financials_json, financial_history_json, "
+                "eligibility_json, explanation_json"
+            )
             .or_(or_filter)
             .execute()
         )
